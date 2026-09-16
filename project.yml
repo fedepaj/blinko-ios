@@ -1,0 +1,45 @@
+name: RSLogViewer
+options:
+  bundleIdPrefix: com.federicopaglioni
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: 62WHG49N7P
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.9"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+targets:
+  RSLogViewer:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: core
+        name: core
+        excludes:
+          - "*.md"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.federicopaglioni.rslogviewer
+        PRODUCT_NAME: RSLog Viewer
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging-Header.h
+        HEADER_SEARCH_PATHS: "$(SRCROOT)/core"
+        TARGETED_DEVICE_FAMILY: "1"
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GCC_C_LANGUAGE_STANDARD: c99
+        GCC_OPTIMIZATION_LEVEL: 2
+        SWIFT_OPTIMIZATION_LEVEL: "-O"
+    info:
+      path: Sources/Info.plist
+      properties:
+        CFBundleDisplayName: RSLog
+        NSCameraUsageDescription: RSLog reads optical log messages from a blinking LED through the camera.
+        NSMotionUsageDescription: Motion data is used to tell you when to hold the phone still.
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        UIRequiredDeviceCapabilities: [arm64, video-camera]
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false

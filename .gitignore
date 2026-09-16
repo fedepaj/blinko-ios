@@ -1,0 +1,5 @@
+RSLogViewer.xcodeproj/
+Sources/Info.plist
+build/
+*.xcuserstate
+.DS_Store

@@ -1,0 +1,274 @@
+import AVFoundation
+import SwiftUI
+
+struct ContentView: View {
+    @EnvironmentObject var model: SessionModel
+    var body: some View {
+        TabView {
+            LiveView().tabItem { Label("Live", systemImage: "camera.viewfinder") }
+            ConsoleView().tabItem { Label("Console", systemImage: "list.bullet.rectangle") }
+            LabView().tabItem { Label("Lab", systemImage: "waveform.path.ecg") }
+            SettingsView().tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
+        }
+        .onAppear { model.start() }
+    }
+}
+
+// MARK: - Live
+
+struct LiveView: View {
+    @EnvironmentObject var model: SessionModel
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .top) {
+                CameraPreview(session: model.controller.session)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                VStack {
+                    statsBar
+                    Spacer()
+                    if !model.isStill {
+                        Label("Hold still", systemImage: "hand.raised.fill")
+                            .padding(8).background(.red.opacity(0.8)).clipShape(Capsule()).padding(.bottom, 8)
+                    }
+                    if let e = model.error { Text(e).foregroundStyle(.red).padding(8).background(.black.opacity(0.7)) }
+                }
+            }
+            ProfileChart(profile: model.profile, marks: model.marks)
+                .frame(height: 110)
+                .background(Color.black.opacity(0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+            SlotBar(progress: model.slotProgress)
+            lastMessage
+        }
+        .padding(8)
+        .background(Color.black)
+    }
+
+    private var statsBar: some View {
+        HStack(spacing: 10) {
+            stat("fps", String(format: "%.0f", model.stats.fps))
+            stat("pkt/s", String(format: "%.1f", model.stats.packetsPerSec))
+            stat("rows/chip", model.stats.rowsPerChip > 0 ? String(format: "%.1f", model.stats.rowsPerChip) : "-")
+            stat("contrast", String(format: "%.0f", model.stats.contrast))
+            stat("mode", model.stats.rgbMode ? "RGB" : "luma")
+            stat("peak", "\(model.stats.peak)")
+            stat("pilots", "\(model.stats.pilots)")
+            stat("msgs", "\(model.stats.totalMessages)")
+        }
+        .font(.system(size: 11, design: .monospaced))
+        .padding(6).background(.black.opacity(0.6)).clipShape(Capsule()).padding(.top, 8)
+    }
+
+    private func stat(_ k: String, _ v: String) -> some View {
+        VStack(spacing: 0) { Text(v).bold(); Text(k).foregroundStyle(.secondary).font(.system(size: 9)) }
+    }
+
+    private var lastMessage: some View {
+        Group {
+            if let m = model.messages.first {
+                HStack { Text(m.levelName).bold().foregroundStyle(m.color); Text(m.text).lineLimit(2) }
+                    .font(.system(.footnote, design: .monospaced))
+            } else {
+                Text(model.stats.lastPacketAge < 3 ? "Receiving packets…" : "Point the camera at the LED, 1–3 cm away")
+                    .font(.footnote).foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 4)
+    }
+}
+
+struct SlotBar: View {
+    let progress: [Float]
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<8, id: \.self) { i in
+                VStack(spacing: 2) {
+                    GeometryReader { g in
+                        ZStack(alignment: .leading) {
+                            Rectangle().fill(.gray.opacity(0.3))
+                            Rectangle().fill(i == 7 ? .red : (i == 6 ? .cyan : .green))
+                                .frame(width: g.size.width * CGFloat(i < progress.count ? progress[i] : 0))
+                        }
+                    }.frame(height: 6)
+                    Text(i == 7 ? "F" : (i == 6 ? "S" : "\(i)")).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+struct ProfileChart: View {
+    let profile: [Float]
+    let marks: [PacketMark]
+    var body: some View {
+        Canvas { ctx, size in
+            for m in marks {
+                let r = CGRect(x: CGFloat(m.start) * size.width, y: 0, width: CGFloat(m.end - m.start) * size.width, height: size.height)
+                let col: Color = m.slot == 7 ? .red : (m.channel == 1 ? .green : (m.channel == 2 ? .blue : .orange))
+                ctx.fill(Path(r), with: .color(col.opacity(0.3)))
+            }
+            guard profile.count > 1 else { return }
+            var path = Path()
+            for (i, v) in profile.enumerated() {
+                let x = CGFloat(i) / CGFloat(profile.count - 1) * size.width
+                let y = size.height - CGFloat(v) / 255 * size.height
+                if i == 0 { path.move(to: CGPoint(x: x, y: y)) } else { path.addLine(to: CGPoint(x: x, y: y)) }
+            }
+            ctx.stroke(path, with: .color(.yellow), lineWidth: 1)
+        }
+    }
+}
+
+struct CameraPreview: UIViewRepresentable {
+    let session: AVCaptureSession
+    final class PreviewView: UIView {
+        override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
+        var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+    }
+    func makeUIView(context: Context) -> PreviewView {
+        let v = PreviewView()
+        v.previewLayer.session = session
+        v.previewLayer.videoGravity = .resizeAspect
+        v.backgroundColor = .black
+        return v
+    }
+    func updateUIView(_ uiView: PreviewView, context: Context) {}
+}
+
+// MARK: - Console
+
+struct ConsoleView: View {
+    @EnvironmentObject var model: SessionModel
+    var body: some View {
+        NavigationStack {
+            List {
+                if let f = model.faultMessage {
+                    Section("Fault") {
+                        HStack { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red); Text(f.text).font(.system(.body, design: .monospaced)) }
+                    }
+                }
+                Section("Messages (\(model.messages.count))") {
+                    ForEach(model.messages) { m in
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack {
+                                Text(m.levelName).font(.caption.bold()).foregroundStyle(m.color)
+                                Text("slot \(m.slot)").font(.caption2).foregroundStyle(.secondary)
+                                Spacer()
+                                Text(m.date, format: .dateTime.hour().minute().second()).font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Text(m.text).font(.system(.body, design: .monospaced))
+                        }
+                    }
+                }
+            }
+            .navigationTitle("RSLog Console")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) { Button("Clear") { model.clearMessages() } }
+                ToolbarItem(placement: .topBarTrailing) { ShareLink(item: model.exportText) { Image(systemName: "square.and.arrow.up") } }
+            }
+        }
+    }
+}
+
+// MARK: - Lab (rolling shutter calibration)
+
+struct LabView: View {
+    @EnvironmentObject var model: SessionModel
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    Toggle("Strobe calibration mode", isOn: $model.labMode)
+                    HStack {
+                        Text("Strobe frequency (Hz)")
+                        Spacer()
+                        TextField("Hz", value: $model.settings.strobeHz, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
+                    }
+                    Text("Flash the strobe_calib sketch (or send `strobe 2000` to the demo), enable this mode and point the camera at the LED.").font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Live profile") {
+                    ProfileChart(profile: model.profile, marks: []).frame(height: 90)
+                }
+                if let r = model.lab {
+                    Section("Measurement (\(r.axis.rawValue) axis, \(r.count) samples)") {
+                        row("Band period", r.periodRows > 0 ? String(format: "%.2f rows", r.periodRows) : "no bands found")
+                        row("Peak strength", String(format: "%.2f (other axis %.2f)", r.strength, r.otherStrength))
+                        row("Row time", r.rowTimeUs > 0 ? String(format: "%.2f µs", r.rowTimeUs) : "-")
+                        row("Frame readout", r.readoutMs > 0 ? String(format: "%.2f ms", r.readoutMs) : "-")
+                        if r.rowTimeUs > 0 {
+                            row("Min chip (4 rows)", String(format: "%.0f µs", 4 * r.rowTimeUs))
+                            row("Packet height @100µs", String(format: "%.0f rows", 59 * 100 / r.rowTimeUs))
+                        }
+                        if r.otherStrength > r.strength * 1.5 && r.otherStrength > 0.2 {
+                            Button("Bands are on the other axis → switch") {
+                                model.settings.axis = r.axis == .rows ? .columns : .rows
+                            }
+                        }
+                    }
+                }
+                Section("Camera") {
+                    row("Device", model.camera.name)
+                    row("Format", "\(model.camera.width)×\(model.camera.height) @ \(Int(model.camera.fps))")
+                    row("Exposure", String(format: "%.1f µs (min %.1f)", model.camera.exposureUs, model.camera.minExposureUs))
+                    row("ISO", String(format: "%.0f (%.0f–%.0f)", model.camera.iso, model.camera.minISO, model.camera.maxISO))
+                    row("Lens", String(format: "%.2f", model.camera.lensPosition))
+                    row("ROI", "\(model.stats.roi.0)–\(model.stats.roi.1) / \(model.stats.crossLength)")
+                }
+            }
+            .navigationTitle("Lab")
+        }
+    }
+    private func row(_ k: String, _ v: String) -> some View {
+        HStack { Text(k); Spacer(); Text(v).font(.system(.body, design: .monospaced)).foregroundStyle(.secondary) }
+    }
+}
+
+// MARK: - Settings
+
+struct SettingsView: View {
+    @EnvironmentObject var model: SessionModel
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Camera") {
+                    Picker("Camera", selection: $model.settings.camera) { ForEach(CameraKind.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+                    Picker("Frame rate", selection: $model.settings.fps) {
+                        ForEach(model.camera.frameRates.isEmpty ? [30, 60] : model.camera.frameRates, id: \.self) { Text("\(Int($0)) fps").tag($0) }
+                    }.pickerStyle(.segmented)
+                    VStack(alignment: .leading) {
+                        Text(String(format: "Exposure: %.0f µs (shortest %.0f µs)", model.camera.exposureUs, model.camera.minExposureUs))
+                        Slider(value: $model.settings.exposure, in: 0...1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(String(format: "ISO: %.0f", model.camera.iso))
+                        Slider(value: $model.settings.iso, in: 0...1)
+                    }
+                    VStack(alignment: .leading) {
+                        Text(String(format: "Lens position: %.2f (1 = far focus, LED blurred)", model.settings.lensPosition))
+                        Slider(value: $model.settings.lensPosition, in: 0...1)
+                    }.disabled(!model.camera.lensSupported)
+                    VStack(alignment: .leading) {
+                        Text(String(format: "Zoom: %.1fx", model.settings.zoom))
+                        Slider(value: $model.settings.zoom, in: 1...Double(max(1, model.camera.maxZoom)))
+                    }
+                }
+                Section("Decoder") {
+                    Picker("Scan axis", selection: $model.settings.axis) { ForEach(ScanAxis.allCases) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented)
+                    VStack(alignment: .leading) {
+                        Text(String(format: "Min contrast: %.0f", model.settings.minContrast))
+                        Slider(value: $model.settings.minContrast, in: 2...40, step: 1)
+                    }
+                    Toggle("Dump frames to Documents (debug)", isOn: $model.settings.dumpFrames)
+                    Text("Stats: \(model.stats.totalPackets) packets, \(model.stats.totalMessages) messages, syncs/frame \(model.stats.syncs), crc fail \(model.stats.crcFail)")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Tips") {
+                    Text("Hold the phone 1–3 cm from the board so the defocused LED fills the frame. Keep exposure at the shortest setting and lens position at 1.0. Use 60 fps or higher.")
+                        .font(.footnote)
+                }
+            }
+            .navigationTitle("Settings")
+        }
+    }
+}

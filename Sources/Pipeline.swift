@@ -1,0 +1,227 @@
+import CoreVideo
+import Foundation
+
+struct PacketMark: Identifiable {
+    let id: Int
+    let start: Float, end: Float   // normalized 0..1 along the scan axis
+    let quality: Float
+    let slot: Int, seed: Int
+    let channel: Int               // 0 red/luma, 1 green, 2 blue
+}
+
+struct DecodeStats {
+    var fps: Double = 0
+    var packetsPerSec: Double = 0
+    var rowsPerChip: Float = 0
+    var contrast: Float = 0
+    var syncs = 0, crcFail = 0
+    var totalPackets = 0, totalMessages = 0
+    var roi = (0, 0), crossLength = 1
+    var profileLength = 0
+    var lastPacketAge: Double = 999
+    var rgbMode = false
+    var pilots = 0
+    var calCond: Float = 0
+    var peak = 0
+    var satFrac: Float = 0
+}
+
+struct Snapshot {
+    var profile: [Float]
+    var marks: [PacketMark]
+    var stats: DecodeStats
+    var slotProgress: [Float]
+}
+
+struct LabResult {
+    var axis: ScanAxis
+    var periodRows: Float        // band period in scan units
+    var strength: Float          // normalized autocorrelation peak 0..1
+    var otherStrength: Float
+    var rowTimeUs: Double        // derived with the strobe frequency
+    var readoutMs: Double
+    var count: Int
+}
+
+/// Frame -> profile -> packets -> messages. Runs on the camera queue.
+final class Pipeline {
+    var axis: ScanAxis = .rows
+    var labMode = false
+    var strobeHz: Double = 2000
+    var minContrast: Float = 6
+
+    var onSnapshot: ((Snapshot) -> Void)?
+    var onMessage: ((Int, Int, String) -> Void)?
+    var onLab: ((LabResult) -> Void)?
+
+    private let processor = FrameProcessor()
+    private let rx: UnsafeMutableRawPointer = {
+        let p = UnsafeMutableRawPointer.allocate(byteCount: rs_rx_sizeof(), alignment: 16)
+        rs_rx_init(p.assumingMemoryBound(to: rs_rx_t.self))
+        return p
+    }()
+    private var rxp: UnsafeMutablePointer<rs_rx_t> { rx.assumingMemoryBound(to: rs_rx_t.self) }
+    private var profile = [Float](repeating: 0, count: 4096)   /* luma, for display and lab */
+    private var profileB = [Float](repeating: 0, count: 4096)
+    private var frameTimes: [Double] = []
+    private var packetTimes: [Double] = []
+    private var lastUI: Double = 0
+    private var lastPacket: Double = -1e9
+    private var totalPackets = 0, totalMessages = 0
+    private var rpcEMA: Float = 0
+    private var markSeq = 0
+    private var lastDump: Double = 0
+    var dumpFrames = false
+
+    /// Save the full luma plane as PGM (Documents/frame.pgm) for offline analysis.
+    private func dumpFrame(_ pb: CVPixelBuffer) {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), bpr = CVPixelBufferGetBytesPerRow(pb)
+        var data = Data("P6\n\(w) \(h)\n255\n".utf8)
+        let px = base.assumingMemoryBound(to: UInt8.self)
+        var row = [UInt8](repeating: 0, count: w * 3)
+        for r in 0..<h {
+            let p = px + r * bpr
+            for c in 0..<w { row[c * 3] = p[c * 4 + 2]; row[c * 3 + 1] = p[c * 4 + 1]; row[c * 3 + 2] = p[c * 4] }
+            data.append(contentsOf: row)
+        }
+        let url = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("frame.ppm")
+        try? data.write(to: url)
+    }
+
+    init() { }
+
+    func reset() { rs_rx_init(rxp); totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0 }
+
+    private func lumaProfile(_ res: FrameProcessor.Result) {
+        let n = res.count
+        for i in 0..<n { profile[i] = (processor.r[i] + processor.g[i] + processor.b[i]) / 3 }
+    }
+
+    func process(_ pb: CVPixelBuffer, time t: Double) {
+        let now = CFAbsoluteTimeGetCurrent()
+        frameTimes.append(now); frameTimes.removeAll { now - $0 > 1 }
+
+        if dumpFrames && now - lastDump > 2 { lastDump = now; dumpFrame(pb) }
+        let res = processor.profiles(from: pb, axis: axis)
+        guard res.count > 16 else { return }
+        lumaProfile(res)
+
+        if labMode { analyzeLab(pb, res); return }
+
+        rxp.pointee.cfg.min_contrast = minContrast
+        let n = processor.r.withUnsafeBufferPointer { rp in processor.g.withUnsafeBufferPointer { gp in processor.b.withUnsafeBufferPointer { bp in
+            rs_rx_process(rxp, rp.baseAddress, gp.baseAddress, bp.baseAddress, Int32(res.count), Float(t))
+        } } }
+        var marks: [PacketMark] = []
+        var progress = [Float](repeating: 0, count: 8)
+        for i in 0..<Int(n) {
+            var pkt = rs_packet_t(); var ch: UInt8 = 0
+            guard rs_rx_packet_at(rxp, Int32(i), &pkt, &ch) != 0 else { continue }
+            totalPackets += 1
+            packetTimes.append(now)
+            lastPacket = now
+            rpcEMA = rpcEMA == 0 ? pkt.rows_per_chip : 0.9 * rpcEMA + 0.1 * pkt.rows_per_chip
+            markSeq += 1
+            marks.append(PacketMark(id: markSeq, start: pkt.row_start / Float(res.count), end: pkt.row_end / Float(res.count),
+                                    quality: pkt.quality, slot: Int(pkt.id), seed: Int(pkt.seed), channel: Int(ch)))
+        }
+        var msg = rs_message_t()
+        while rs_rx_pop_message(rxp, &msg) != 0 {
+            totalMessages += 1
+            let text = withUnsafePointer(to: &msg.text) { $0.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) } }
+            onMessage?(Int(msg.id), Int(msg.level), text)
+        }
+        packetTimes.removeAll { now - $0 > 2 }
+        for s in 0..<8 { progress[s] = rs_asm_progress(&rxp.pointee.assembler, UInt8(s)) }
+        let st = rs_rx_stats(rxp).pointee
+
+        if now - lastUI > 0.08 || n > 0 {
+            lastUI = now
+            var stats = DecodeStats()
+            stats.fps = Double(frameTimes.count)
+            stats.packetsPerSec = Double(packetTimes.count) / 2
+            stats.rowsPerChip = rpcEMA
+            stats.contrast = st.contrast
+            stats.syncs = Int(st.syncs); stats.crcFail = Int(st.crc_fail)
+            stats.totalPackets = totalPackets; stats.totalMessages = totalMessages
+            stats.rgbMode = rs_rx_mode(rxp) == 1; stats.pilots = Int(rs_rx_pilots(rxp)); stats.calCond = rs_rx_cal_cond(rxp)
+            stats.peak = res.peak; stats.satFrac = res.satFrac
+            stats.roi = res.roi; stats.crossLength = res.crossLength
+            stats.profileLength = res.count
+            stats.lastPacketAge = now - lastPacket
+            onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: marks, stats: stats, slotProgress: progress))
+        }
+    }
+
+    // MARK: - Lab (strobe calibration)
+
+    private func analyzeLab(_ pb: CVPixelBuffer, _ res: FrameProcessor.Result) {
+        let other: ScanAxis = axis == .rows ? .columns : .rows
+        let (pA, sA) = Self.period(profile, res.count)
+        let resB = processor.profiles(from: pb, axis: other)
+        for i in 0..<resB.count { profileB[i] = (processor.r[i] + processor.g[i] + processor.b[i]) / 3 }
+        let (_, sB) = Self.period(profileB, resB.count)
+        let now = CFAbsoluteTimeGetCurrent()
+        if now - lastUI > 0.15 {
+            lastUI = now
+            var stats = DecodeStats()
+            stats.fps = Double(frameTimes.count); stats.profileLength = res.count; stats.roi = res.roi; stats.crossLength = res.crossLength
+            onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats, slotProgress: []))
+            let rowTime = pA > 0 ? 1.0 / (strobeHz * Double(pA)) : 0
+            onLab?(LabResult(axis: axis, periodRows: pA, strength: sA, otherStrength: sB,
+                             rowTimeUs: rowTime * 1e6, readoutMs: rowTime * Double(res.count) * 1e3, count: res.count))
+        }
+    }
+
+    /// Dominant period (in samples) of a profile via normalized autocorrelation. Returns (period, peak strength).
+    static func period(_ p: [Float], _ n: Int) -> (Float, Float) {
+        guard n > 32 else { return (0, 0) }
+        // remove slow envelope with a moving average of 1/8 of the length
+        let w = max(8, n / 8)
+        var x = [Float](repeating: 0, count: n)
+        var acc: Float = 0
+        for i in 0..<n {
+            acc += p[i]; if i >= w { acc -= p[i - w] }
+            let m = acc / Float(min(i + 1, w))
+            x[i] = p[i] - m
+        }
+        var e: Float = 0; for i in 0..<n { e += x[i] * x[i] }
+        guard e > 1e-3 else { return (0, 0) }
+        let maxLag = n / 3
+        var best: Float = 0, bestLag = 0
+        var r = [Float](repeating: 0, count: maxLag + 1)
+        for lag in 1...maxLag {
+            var s: Float = 0
+            for i in 0..<(n - lag) { s += x[i] * x[i + lag] }
+            r[lag] = s / e
+        }
+        // first zero crossing, then first local maximum
+        var lag = 1
+        while lag < maxLag && r[lag] > 0 { lag += 1 }
+        while lag < maxLag - 1 {
+            if r[lag] > r[lag - 1] && r[lag] >= r[lag + 1] && r[lag] > 0.05 { best = r[lag]; bestLag = lag; break }
+            lag += 1
+        }
+        guard bestLag > 1 else { return (0, 0) }
+        // parabolic refinement
+        let y0 = r[bestLag - 1], y1 = r[bestLag], y2 = r[bestLag + 1]
+        let denom = y0 - 2 * y1 + y2
+        let delta = denom != 0 ? 0.5 * (y0 - y2) / denom : 0
+        return (Float(bestLag) + delta, best)
+    }
+
+    static func downsample(_ p: [Float], _ n: Int, to m: Int) -> [Float] {
+        guard n > m else { return Array(p[0..<n]) }
+        var o = [Float](repeating: 0, count: m)
+        for i in 0..<m {
+            let a = i * n / m, b = max(a + 1, (i + 1) * n / m)
+            var mx: Float = -1
+            for j in a..<b { mx = max(mx, p[j]) }
+            o[i] = mx
+        }
+        return o
+    }
+}
