@@ -31,6 +31,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         GCC_C_LANGUAGE_STANDARD: c99
         GCC_OPTIMIZATION_LEVEL: 2
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         SWIFT_OPTIMIZATION_LEVEL: "-O"
     info:
       path: Sources/Info.plist
