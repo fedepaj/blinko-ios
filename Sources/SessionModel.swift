@@ -205,6 +205,12 @@ final class SessionModel: ObservableObject {
         return ids.sorted().map { ($0, boardIds[$0]) }
     }
     var filteredMessages: [LogMessage] { sourceFilter == 0 ? messages : messages.filter { $0.source == sourceFilter } }
+    func deleteMessages(at offsets: IndexSet) {
+        let shown = filteredMessages
+        let ids = Set(offsets.map { shown[$0].id })
+        messages.removeAll { ids.contains($0.id) }
+        saveHistory()
+    }
 
     // MARK: - replay of a recording (Lab)
 

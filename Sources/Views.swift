@@ -188,20 +188,13 @@ struct CameraPreview: UIViewRepresentable {
 
 struct ConsoleView: View {
     @EnvironmentObject var model: SessionModel
+    @State private var confirmClear = false
     var body: some View {
         NavigationStack {
             List {
                 if let f = model.faultMessage {
                     Section("Fault") {
                         HStack { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red); Text(f.text).font(.system(.body, design: .monospaced)) }
-                    }
-                }
-                if !model.sourcesSeen.isEmpty {
-                    Section {
-                        Picker("Source", selection: $model.sourceFilter) {
-                            Text("All").tag(0)
-                            ForEach(model.sourcesSeen, id: \.id) { s in Text("#\(s.id)" + (s.board.map { " \($0)" } ?? "")).tag(s.id) }
-                        }.pickerStyle(.segmented)
                     }
                 }
                 Section("Messages (\(model.filteredMessages.count))") {
@@ -218,12 +211,33 @@ struct ConsoleView: View {
                             Text(m.text).font(.system(.body, design: .monospaced))
                         }
                     }
+                    .onDelete { idx in model.deleteMessages(at: idx) }
                 }
             }
             .navigationTitle(model.sourceFilter == 0 ? "RSLog Console" : "Source #\(model.sourceFilter)")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { Button("Clear") { model.clearMessages() } }
-                ToolbarItem(placement: .topBarTrailing) { ShareLink(item: model.exportText) { Image(systemName: "square.and.arrow.up") } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Clear", role: .destructive) { confirmClear = true }
+                        .confirmationDialog("Delete all \(model.messages.count) messages?", isPresented: $confirmClear, titleVisibility: .visible) {
+                            Button("Delete all", role: .destructive) { model.clearMessages() }
+                        }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    HStack {
+                        // source picker as a menu: scales to many boards (id, board id, message count, last seen)
+                        Menu {
+                            Picker("Source", selection: $model.sourceFilter) {
+                                Label("All sources", systemImage: "circle.grid.2x2").tag(0)
+                                ForEach(model.sourcesSeen, id: \.id) { s in
+                                    Label("#\(s.id)" + (s.board.map { " · board \($0)" } ?? "") + "  (\(model.messages.filter { $0.source == s.id }.count))", systemImage: "lightbulb").tag(s.id)
+                                }
+                            }
+                        } label: {
+                            Label(model.sourceFilter == 0 ? "All" : "#\(model.sourceFilter)" + (model.boardIds[model.sourceFilter].map { " \($0)" } ?? ""), systemImage: "line.3.horizontal.decrease.circle")
+                        }
+                        ShareLink(item: model.exportText) { Image(systemName: "square.and.arrow.up") }
+                    }
+                }
             }
         }
     }
