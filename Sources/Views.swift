@@ -38,13 +38,15 @@ struct LiveView: View {
                 .background(Color.black.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             SlotBar(progress: model.slotProgress)
-            HStack {
-                Button(action: { model.startRecording(seconds: 2) }) {
-                    Label(model.isRecording ? "REC" : "Record 2 s", systemImage: "record.circle")
-                        .foregroundStyle(model.isRecording ? .white : .red)
+            if model.settings.recordingEnabled {
+                HStack {
+                    Button(action: { model.startRecording(seconds: 2) }) {
+                        Label(model.isRecording ? "REC" : "Record 2 s", systemImage: "record.circle")
+                            .foregroundStyle(model.isRecording ? .white : .red)
+                    }
+                    .buttonStyle(.bordered).disabled(model.isRecording)
+                    TextField("note (board, motion…)", text: $model.recordingNote).textFieldStyle(.roundedBorder).font(.footnote)
                 }
-                .buttonStyle(.bordered).disabled(model.isRecording)
-                TextField("note (board, motion…)", text: $model.recordingNote).textFieldStyle(.roundedBorder).font(.footnote)
             }
             if !model.lastRecording.isEmpty { Text(model.lastRecording).font(.caption).foregroundStyle(.secondary) }
             lastMessage
@@ -306,6 +308,7 @@ struct SettingsView: View {
                         Text("Wi-Fi: \(model.remoteAddress)  ·  USB: pymobiledevice3 usbmux forward 7777 7777  ·  clients: \(model.remoteClients)")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
+                    Toggle("Recording mode (Record button, .rsrec to Documents)", isOn: $model.settings.recordingEnabled)
                     Toggle("Dump frames to Documents", isOn: $model.settings.dumpFrames)
                 }
                 Section("Tips") {

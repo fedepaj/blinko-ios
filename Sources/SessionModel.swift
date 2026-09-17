@@ -30,6 +30,7 @@ struct CaptureSettings: Equatable {
     var dumpFrames = false
     var multiSource = true        /* segment the frame and decode every light separately */
     var remoteEnabled = true      /* TCP remote session server (Settings > Debug) */
+    var recordingEnabled = false  /* Record button in the live view (Settings > Debug); remote record always works */
 }
 
 @MainActor
@@ -222,6 +223,21 @@ final class SessionModel: ObservableObject {
             reply(["type": "messages", "messages": list], nil)
         case "reset":
             clearMessages(); reply(["type": "ok", "cmd": name], nil)
+        case "files":
+            let dir = Recorder.directory
+            let names = ((try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []).sorted()
+            let list: [[String: Any]] = names.map { n in
+                let size = (try? FileManager.default.attributesOfItem(atPath: dir.appendingPathComponent(n).path)[.size] as? Int) ?? 0
+                return ["name": n, "size": size]
+            }
+            reply(["type": "files", "files": list], nil)
+        case "delete":
+            let names = (cmd["names"] as? [String]) ?? [(cmd["name"] as? String) ?? ""]
+            var removed = 0
+            for n in names where !n.isEmpty && !n.contains("/") {
+                if (try? FileManager.default.removeItem(at: Recorder.directory.appendingPathComponent(n))) != nil { removed += 1 }
+            }
+            reply(["type": "ok", "cmd": name, "removed": removed], nil)
         case "set":
             guard let key = cmd["key"] as? String else { reply(["type": "error", "msg": "set needs key/value"], nil); return }
             let v = cmd["value"]

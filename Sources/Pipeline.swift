@@ -180,7 +180,9 @@ final class Pipeline {
         if let req = frameRequest { frameRequest = nil; req(pb, t) }
 
         if recorder.isRecording {
-            if !recorder.append(pb, timestamp: t) { onRecordingFinished?(recorder.summary) }
+            if !recorder.append(pb, timestamp: t) {
+                recorder.whenDrained { [weak self] in guard let self = self else { return }; self.onRecordingFinished?(self.recorder.summary) }
+            }
             return
         }
         if dumpFrames && now - lastDump > 2 { lastDump = now; dumpFrame(pb) }
