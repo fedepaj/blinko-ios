@@ -1,6 +1,6 @@
-# rslog-ios
+# blinko-ios
 
-RSLog Viewer for iPhone (SwiftUI + AVFoundation): manual exposure, focus at
+Blinko Viewer for iPhone (SwiftUI + AVFoundation): manual exposure, focus at
 infinity, 1080p at up to 240 fps, BGRA capture, shared C receiver from the git
 submodule `core/`. Project generated with xcodegen (`project.yml`).
 

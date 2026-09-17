@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Remote session client for the RSLog iOS app (Settings > Debug > Remote session).
+"""Remote session client for the Blinko iOS app (Settings > Debug > Remote session).
 
 Connect over USB (recommended, no Wi-Fi needed):
     pymobiledevice3 usbmux forward 7777 7777 &     # then host = 127.0.0.1

@@ -1,4 +1,4 @@
-name: RSLogViewer
+name: Blinko
 options:
   bundleIdPrefix: com.federicopaglioni
   deploymentTarget:
@@ -11,7 +11,7 @@ settings:
     SWIFT_VERSION: "5.9"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 targets:
-  RSLogViewer:
+  Blinko:
     type: application
     platform: iOS
     sources:
@@ -22,8 +22,8 @@ targets:
           - "*.md"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.federicopaglioni.rslogviewer
-        PRODUCT_NAME: RSLog Viewer
+        PRODUCT_BUNDLE_IDENTIFIER: com.federicopaglioni.blinko
+        PRODUCT_NAME: Blinko
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging-Header.h
         HEADER_SEARCH_PATHS: "$(SRCROOT)/core"
         TARGETED_DEVICE_FAMILY: "1"
@@ -36,8 +36,8 @@ targets:
     info:
       path: Sources/Info.plist
       properties:
-        CFBundleDisplayName: RSLog
-        NSCameraUsageDescription: RSLog reads optical log messages from a blinking LED through the camera.
+        CFBundleDisplayName: Blinko
+        NSCameraUsageDescription: Blinko reads optical log messages from a blinking LED through the camera.
         NSMotionUsageDescription: Motion data is used to tell you when to hold the phone still.
         NSLocalNetworkUsageDescription: The remote session lets a computer on the local network drive the app and receive recordings.
         UILaunchScreen: {}

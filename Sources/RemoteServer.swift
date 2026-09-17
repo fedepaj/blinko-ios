@@ -15,7 +15,7 @@ final class RemoteServer {
     var onCommand: ((_ cmd: [String: Any], _ reply: @escaping ([String: Any], Data?) -> Void) -> Void)?
     var onClientsChanged: ((Int) -> Void)?
 
-    private let queue = DispatchQueue(label: "rslog.remote")
+    private let queue = DispatchQueue(label: "blinko.remote")
     private var listener: NWListener?
     private var conns: [ObjectIdentifier: NWConnection] = [:]
     private(set) var isRunning = false

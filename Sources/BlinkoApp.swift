@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct RSLogViewerApp: App {
+struct BlinkoApp: App {
     @StateObject private var model = SessionModel()
 
     var body: some Scene {

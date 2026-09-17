@@ -32,7 +32,7 @@ enum CameraError: LocalizedError {
 /// Owns the AVCaptureSession. All configuration happens on `queue`.
 final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
-    let queue = DispatchQueue(label: "rslog.camera", qos: .userInteractive)
+    let queue = DispatchQueue(label: "blinko.camera", qos: .userInteractive)
     private let output = AVCaptureVideoDataOutput()
     private(set) var device: AVCaptureDevice?
     var frameHandler: ((CVPixelBuffer, Double) -> Void)?

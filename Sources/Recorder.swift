@@ -35,7 +35,7 @@ final class Recorder {
     private var free: [Int] = []
     private var compressed = [UInt8]()
     private let lock = NSLock()
-    private let worker = DispatchQueue(label: "rslog.recorder", qos: .userInitiated)
+    private let worker = DispatchQueue(label: "blinko.recorder", qos: .userInitiated)
     var latestMotion: () -> (gyro: [Float], accel: [Float]) = { ([0, 0, 0], [0, 0, 0]) }
 
     static var directory: URL {

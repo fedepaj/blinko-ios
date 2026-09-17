@@ -6,7 +6,7 @@ import Foundation
 /// (Lab tab). Runs on a background queue; messages are reported with their source track.
 final class ReplayEngine {
     struct Result { var frames = 0; var packets = 0; var messages = 0; var seconds = 0.0; var tracks = 0 }
-    private let queue = DispatchQueue(label: "rslog.replay", qos: .userInitiated)
+    private let queue = DispatchQueue(label: "blinko.replay", qos: .userInitiated)
     private var cancelled = false
 
     static func recordings() -> [URL] {

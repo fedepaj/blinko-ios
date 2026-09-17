@@ -214,7 +214,7 @@ struct ConsoleView: View {
                     .onDelete { idx in model.deleteMessages(at: idx) }
                 }
             }
-            .navigationTitle(model.sourceFilter == 0 ? "RSLog Console" : "Source #\(model.sourceFilter)")
+            .navigationTitle(model.sourceFilter == 0 ? "Blinko Console" : "Source #\(model.sourceFilter)")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Clear", role: .destructive) { confirmClear = true }

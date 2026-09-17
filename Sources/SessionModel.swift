@@ -95,7 +95,7 @@ final class SessionModel: ObservableObject {
         pipeline.onMessage = { [weak self] slot, level, text, source in
             Task { @MainActor in
                 guard let self = self else { return }
-                Diag.log("[rslog] message src \(source) slot \(slot) level \(level): \(text)")
+                Diag.log("[blinko] message src \(source) slot \(slot) level \(level): \(text)")
                 let m = LogMessage(date: Date(), slot: slot, level: level, text: text, source: source)
                 self.messages.insert(m, at: 0)
                 if self.messages.count > Self.historyMax { self.messages.removeLast() }
@@ -115,12 +115,12 @@ final class SessionModel: ObservableObject {
         pipeline.onRecordingFinished = { [weak self] summary in
             Task { @MainActor in
                 guard let self = self else { return }
-                self.isRecording = false; self.lastRecording = summary; Diag.log("[rslog] recording done: \(summary)")
+                self.isRecording = false; self.lastRecording = summary; Diag.log("[blinko] recording done: \(summary)")
                 self.finishRemoteRecording()
             }
         }
         pipeline.onLab = { [weak self] r in
-            Diag.log(String(format: "[rslog] lab axis=%@ period=%.2f strength=%.2f other=%.2f rowTime=%.2fus readout=%.2fms n=%d", r.axis.rawValue, r.periodRows, r.strength, r.otherStrength, r.rowTimeUs, r.readoutMs, r.count))
+            Diag.log(String(format: "[blinko] lab axis=%@ period=%.2f strength=%.2f other=%.2f rowTime=%.2fus readout=%.2fms n=%d", r.axis.rawValue, r.periodRows, r.strength, r.otherStrength, r.rowTimeUs, r.readoutMs, r.count))
             Task { @MainActor in self?.lab = r }
         }
         controller.frameHandler = { [weak self] pb, t in self?.pipeline.process(pb, time: t) }
@@ -142,7 +142,7 @@ final class SessionModel: ObservableObject {
                 self.camera.exposureUs = e.us; self.camera.iso = e.iso; self.camera.lensPosition = e.lens
                 let st = self.stats
                 let tr = self.tracks.map { "#\($0.id)(\(Int($0.x * 100)),\(Int($0.y * 100)) \($0.modeName) \($0.packets)p)" }.joined(separator: " ")
-                Diag.log(String(format: "[rslog] stats fps=%.0f pkt/s=%.1f rpc=%.1f contrast=%.0f syncs=%d crcfail=%d pkts=%d msgs=%d roi=%d-%d/%d n=%d exp=%.1fus iso=%.0f mode=%@ pilots=%d cond=%.2f peak=%d sat=%.3f tracks=%@",
+                Diag.log(String(format: "[blinko] stats fps=%.0f pkt/s=%.1f rpc=%.1f contrast=%.0f syncs=%d crcfail=%d pkts=%d msgs=%d roi=%d-%d/%d n=%d exp=%.1fus iso=%.0f mode=%@ pilots=%d cond=%.2f peak=%d sat=%.3f tracks=%@",
                              st.fps, st.packetsPerSec, st.rowsPerChip, st.contrast, st.syncs, st.crcFail, st.totalPackets, st.totalMessages,
                              st.roi.0, st.roi.1, st.crossLength, st.profileLength, e.us, e.iso, st.modeName, st.pilots, st.calCond, st.peak, st.satFrac, tr))
             }
@@ -157,7 +157,7 @@ final class SessionModel: ObservableObject {
                 case .success(let info):
                     self.camera = info
                     self.error = nil
-                    Diag.log(String(format: "[rslog] camera %@ %dx%d @%.0f fps minExp=%.1fus maxExp=%.0fus iso %.0f-%.0f lens=%d zoom=%.1f rates=%@",
+                    Diag.log(String(format: "[blinko] camera %@ %dx%d @%.0f fps minExp=%.1fus maxExp=%.0fus iso %.0f-%.0f lens=%d zoom=%.1f rates=%@",
                                  info.name, info.width, info.height, info.fps, info.minExposureUs, info.maxExposureUs, info.minISO, info.maxISO,
                                  info.lensSupported ? 1 : 0, Double(info.maxZoom), info.frameRates.description))
                     self.controller.applyExposure(fraction: s.exposure, isoFraction: s.iso)
