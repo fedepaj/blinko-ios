@@ -87,6 +87,8 @@ final class Pipeline {
     private var frameTimes: [Double] = []
     private var packetTimes: [Double] = []
     private var lastUI: Double = 0
+    private var multiFrame = 0
+    private var lastRes = FrameProcessor.Result()
     private var lastPacket: Double = -1e9
     private var totalPackets = 0, totalMessages = 0
     private var rpcEMA: Float = 0
@@ -186,13 +188,19 @@ final class Pipeline {
             return
         }
         if dumpFrames && now - lastDump > 2 { lastDump = now; dumpFrame(pb) }
-        let res = processor.profiles(from: pb, axis: axis)
-        guard res.count > 16 else { return }
-        lumaProfile(res)
-
-        if labMode { analyzeLab(pb, res); return }
+        // The global profile costs a full-frame pass and, in multi-source mode, only feeds the
+        // chart and the stats bar: compute it every 4th frame there, every frame otherwise.
+        multiFrame &+= 1
+        var resOpt: FrameProcessor.Result? = nil
+        if !multiSource || labMode || multiFrame % 4 == 0 {
+            let r0 = processor.profiles(from: pb, axis: axis)
+            guard r0.count > 16 else { return }
+            lumaProfile(r0); resOpt = r0; lastRes = r0
+        }
+        if labMode, let res = resOpt { analyzeLab(pb, res); return }
 
         if multiSource, let n = processMulti(pb, t: t, now: now) {
+            let res = lastRes
             packetTimes.removeAll { now - $0 > 2 }
             if now - lastUI > 0.08 || n > 0 {
                 lastUI = now
@@ -209,6 +217,12 @@ final class Pipeline {
                                      slotProgress: Array(repeating: 0, count: 8), tracks: lastTracks))
             }
             return
+        }
+        let res: FrameProcessor.Result
+        if let r0 = resOpt { res = r0 } else {
+            let r0 = processor.profiles(from: pb, axis: axis)
+            guard r0.count > 16 else { return }
+            lumaProfile(r0); res = r0; lastRes = r0
         }
 
         rxp.pointee.cfg.min_contrast = minContrast
