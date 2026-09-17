@@ -32,6 +32,7 @@ struct TrackInfo: Identifiable {
     let x: Float, y: Float, radius: Float   // normalized to the native buffer (0..1 of width / height)
     let rgb: Bool
     var direct: Bool = false
+    var group: Int = 0            // logical source (smallest track id of the linked lights); == id when alone
     let packets: Int, messages: Int, pilots: Int
     var modeName: String { direct ? "direct" : (rgb ? "RGB" : "mono") }
 }
@@ -156,7 +157,7 @@ final class Pipeline {
             var pk: UInt32 = 0, ms: UInt32 = 0
             if rs_multi_track_info(mp, Int32(i), &id, &cx, &cy, &rad, &mode, &pk, &ms, &pilots) != 0 {
                 tracks.append(TrackInfo(id: Int(id), x: cx / Float(w), y: cy / Float(h), radius: rad / Float(w), rgb: mode != 0, direct: mode == 2,
-                                        packets: Int(pk), messages: Int(ms), pilots: Int(pilots)))
+                                        group: Int(rs_multi_track_group(mp, Int32(i))), packets: Int(pk), messages: Int(ms), pilots: Int(pilots)))
             }
         }
         lastTracks = tracks

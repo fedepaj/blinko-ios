@@ -145,20 +145,30 @@ struct CameraPreview: UIViewRepresentable {
 
         func setMarkers(_ tracks: [TrackInfo], texts: [Int: String]) {
             markerLayers.forEach { $0.removeFromSuperlayer() }; markerLayers.removeAll()
+            // lights of one board (same group) are joined by a line to their leader
+            for t in tracks where t.group != t.id {
+                guard let leader = tracks.first(where: { $0.id == t.group }) else { continue }
+                let a = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: CGFloat(t.x), y: CGFloat(t.y)))
+                let b = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: CGFloat(leader.x), y: CGFloat(leader.y)))
+                let line = CAShapeLayer(); let path = UIBezierPath(); path.move(to: a); path.addLine(to: b)
+                line.path = path.cgPath; line.strokeColor = Self.palette[(t.group - 1) % Self.palette.count].cgColor
+                line.lineWidth = 2; line.lineDashPattern = [6, 4]; line.fillColor = nil
+                layer.addSublayer(line); markerLayers.append(line)
+            }
             for t in tracks {
                 // track position is in the native (sensor) buffer; the preview layer knows the rotation
                 let p = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: CGFloat(t.x), y: CGFloat(t.y)))
                 let edge = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: CGFloat(t.x + t.radius), y: CGFloat(t.y)))
                 let r = max(12, abs(edge.x - p.x))
-                let color = Self.palette[(t.id - 1) % Self.palette.count]
+                let color = Self.palette[(t.group - 1) % Self.palette.count]
                 let ring = CAShapeLayer()
                 ring.path = UIBezierPath(ovalIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)).cgPath
                 ring.strokeColor = color.cgColor; ring.fillColor = UIColor.clear.cgColor; ring.lineWidth = 2
                 let label = CATextLayer()
-                label.string = "#\(t.id) \(t.modeName) \(t.packets)p" + (texts[t.id].map { "\n" + $0 } ?? "")
+                label.string = "#\(t.group)" + (t.group != t.id ? "·\(t.id)" : "") + " \(t.modeName) \(t.packets)p" + (texts[t.group].map { "\n" + $0 } ?? "")
                 label.fontSize = 11; label.foregroundColor = color.cgColor; label.backgroundColor = UIColor.black.withAlphaComponent(0.55).cgColor
                 label.contentsScale = UIScreen.main.scale; label.alignmentMode = .left; label.isWrapped = true
-                label.frame = CGRect(x: p.x - r, y: p.y + r + 2, width: max(2 * r, 150), height: 30)
+                label.frame = CGRect(x: p.x - r, y: p.y + r + 2, width: max(2 * r, 150), height: 44)
                 layer.addSublayer(ring); layer.addSublayer(label)
                 markerLayers.append(ring); markerLayers.append(label)
             }

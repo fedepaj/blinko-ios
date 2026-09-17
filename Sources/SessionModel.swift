@@ -45,6 +45,7 @@ final class SessionModel: ObservableObject {
     @Published var camera = CameraInfo()
     @Published var lab: LabResult?
     @Published var tracks: [TrackInfo] = []
+    @Published var boardIds: [Int: String] = [:]      // source (group id) -> "id=xxxx" announced by the board
     @Published var labMode = false { didSet { pipeline.labMode = labMode } }
     @Published var error: String?
     @Published var isRecording = false
@@ -68,6 +69,7 @@ final class SessionModel: ObservableObject {
     var lastTextPerSource: [Int: String] {
         var d: [Int: String] = [:]
         for m in messages where m.source > 0 && d[m.source] == nil { d[m.source] = m.text }
+        for (src, id) in boardIds { d[src] = "board " + id + (d[src].map { "\n" + $0 } ?? "") }
         return d
     }
 
@@ -87,6 +89,10 @@ final class SessionModel: ObservableObject {
                 Diag.log("[rslog] message src \(source) slot \(slot) level \(level): \(text)")
                 let m = LogMessage(date: Date(), slot: slot, level: level, text: text, source: source)
                 self.messages.insert(m, at: 0)
+                if source > 0, let r = text.range(of: "id=") {
+                    let hex = text[r.upperBound...].prefix(4)
+                    if hex.count == 4, hex.allSatisfy({ $0.isHexDigit }) { self.boardIds[source] = String(hex) }
+                }
                 if self.messages.count > 500 { self.messages.removeLast() }
                 if self.remoteClients > 0 {
                     self.remote.broadcast(["type": "message", "t": m.date.timeIntervalSince1970, "slot": slot, "level": level,
@@ -166,7 +172,7 @@ final class SessionModel: ObservableObject {
         if s.zoom != old.zoom { controller.applyZoom(CGFloat(s.zoom)) }
     }
 
-    func clearMessages() { messages.removeAll(); pipeline.reset() }
+    func clearMessages() { messages.removeAll(); boardIds.removeAll(); pipeline.reset() }
 
     // MARK: - remote session (RemoteServer.swift; client: ios/tools/rslive.py)
 
