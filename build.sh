@@ -15,6 +15,6 @@ for a in "$@"; do
     case "$a" in
         install) [ -n "$DEVICE" ] || { echo "no paired iPhone found (set DEVICE=<CoreDevice UUID>)" >&2; exit 2; }
                  xcrun devicectl device install app --device "$DEVICE" "$APP" ;;
-        launch)  xcrun devicectl device process launch --terminate-existing --device "$DEVICE" com.federicopaglioni.blinko ;;
+        launch)  xcrun devicectl device process launch --terminate-existing --device "$DEVICE" com.federicopaglioni.rslogviewer ;;
     esac
 done

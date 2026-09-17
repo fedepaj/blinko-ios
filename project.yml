@@ -22,7 +22,7 @@ targets:
           - "*.md"
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.federicopaglioni.blinko
+        PRODUCT_BUNDLE_IDENTIFIER: com.federicopaglioni.rslogviewer
         PRODUCT_NAME: Blinko
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Bridging-Header.h
         HEADER_SEARCH_PATHS: "$(SRCROOT)/core"
