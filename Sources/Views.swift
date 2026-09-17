@@ -196,12 +196,21 @@ struct ConsoleView: View {
                         HStack { Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red); Text(f.text).font(.system(.body, design: .monospaced)) }
                     }
                 }
-                Section("Messages (\(model.messages.count))") {
-                    ForEach(model.messages) { m in
+                if !model.sourcesSeen.isEmpty {
+                    Section {
+                        Picker("Source", selection: $model.sourceFilter) {
+                            Text("All").tag(0)
+                            ForEach(model.sourcesSeen, id: \.id) { s in Text("#\(s.id)" + (s.board.map { " \($0)" } ?? "")).tag(s.id) }
+                        }.pickerStyle(.segmented)
+                    }
+                }
+                Section("Messages (\(model.filteredMessages.count))") {
+                    ForEach(model.filteredMessages) { m in
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
                                 Text(m.levelName).font(.caption.bold()).foregroundStyle(m.color)
-                                if m.source > 0 { Text("src #\(m.source)").font(.caption2.bold()).foregroundStyle(CameraPreviewColors.color(m.source)) }
+                                if m.source > 0 { Text("src #\(m.source)" + (model.boardIds[m.source].map { " \($0)" } ?? "")).font(.caption2.bold()).foregroundStyle(CameraPreviewColors.color(m.source)) }
+                                if m.replay { Text("replay").font(.caption2).foregroundStyle(.purple) }
                                 Text("slot \(m.slot)").font(.caption2).foregroundStyle(.secondary)
                                 Spacer()
                                 Text(m.date, format: .dateTime.hour().minute().second()).font(.caption2).foregroundStyle(.secondary)
@@ -211,7 +220,7 @@ struct ConsoleView: View {
                     }
                 }
             }
-            .navigationTitle("RSLog Console")
+            .navigationTitle(model.sourceFilter == 0 ? "RSLog Console" : "Source #\(model.sourceFilter)")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { Button("Clear") { model.clearMessages() } }
                 ToolbarItem(placement: .topBarTrailing) { ShareLink(item: model.exportText) { Image(systemName: "square.and.arrow.up") } }
@@ -235,6 +244,22 @@ struct LabView: View {
                         TextField("Hz", value: $model.settings.strobeHz, format: .number).keyboardType(.decimalPad).multilineTextAlignment(.trailing).frame(width: 90)
                     }
                     Text("Flash the strobe_calib sketch (or send `strobe 2000` to the demo), enable this mode and point the camera at the LED.").font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Replay a recording") {
+                    let recs = ReplayEngine.recordings()
+                    if recs.isEmpty {
+                        Text("No recordings on this phone. Enable Recording mode in Settings › Debug, or keep one with the remote session.").font(.footnote).foregroundStyle(.secondary)
+                    }
+                    ForEach(recs, id: \.self) { u in
+                        HStack {
+                            Text(u.lastPathComponent).font(.system(.footnote, design: .monospaced))
+                            Spacer()
+                            Button(model.replayRunning ? "…" : "Run") { model.replay(u) }.disabled(model.replayRunning)
+                        }
+                    }
+                    if !model.replayProgress.isEmpty { Text(model.replayProgress).font(.footnote).foregroundStyle(.secondary) }
+                    if model.replayRunning { Button("Cancel") { model.replayEngine.cancel() } }
+                    Text("Runs the recording through the multi-source receiver; messages appear in the console tagged 'replay'.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Live profile") {
                     ProfileChart(profile: model.profile, marks: []).frame(height: 90)
@@ -319,6 +344,7 @@ struct SettingsView: View {
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Toggle("Recording mode (Record button, .rsrec to Documents)", isOn: $model.settings.recordingEnabled)
+                    NavigationLink("Recordings on this phone") { RecordingsView() }
                     Toggle("Dump frames to Documents", isOn: $model.settings.dumpFrames)
                 }
                 Section("Tips") {
@@ -335,5 +361,34 @@ struct SettingsView: View {
 enum CameraPreviewColors {
     static func color(_ id: Int) -> Color {
         [Color.orange, .green, .cyan, .pink][(max(id, 1) - 1) % 4]
+    }
+}
+
+
+// MARK: - Recordings (share / delete)
+
+struct RecordingsView: View {
+    @State private var files: [URL] = ReplayEngine.recordings()
+    var body: some View {
+        List {
+            if files.isEmpty { Text("No recordings.").foregroundStyle(.secondary) }
+            ForEach(files, id: \.self) { u in
+                let size = (try? FileManager.default.attributesOfItem(atPath: u.path)[.size] as? Int) ?? 0
+                HStack {
+                    VStack(alignment: .leading) {
+                        Text(u.lastPathComponent).font(.system(.footnote, design: .monospaced))
+                        Text(String(format: "%.0f MB", Double(size) / 1e6)).font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    ShareLink(item: u) { Image(systemName: "square.and.arrow.up") }
+                }
+            }
+            .onDelete { idx in
+                for i in idx { try? FileManager.default.removeItem(at: files[i]) }
+                files = ReplayEngine.recordings()
+            }
+        }
+        .navigationTitle("Recordings")
+        .toolbar { EditButton() }
     }
 }

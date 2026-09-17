@@ -2,13 +2,14 @@ import AVFoundation
 import Combine
 import SwiftUI
 
-struct LogMessage: Identifiable, Hashable {
-    let id = UUID()
+struct LogMessage: Identifiable, Hashable, Codable {
+    var id = UUID()
     let date: Date
     let slot: Int
     let level: Int
     let text: String
     var source: Int = 0          // multi-source track id, 0 = single receiver
+    var replay: Bool = false     // decoded from a recording (Lab), not live
     static let levelNames = ["DEBUG", "INFO", "WARN", "ERROR", "FATAL", "STATUS", "FAULT", "?"]
     var levelName: String { Self.levelNames[min(level, 7)] }
     var color: Color {
@@ -46,6 +47,13 @@ final class SessionModel: ObservableObject {
     @Published var lab: LabResult?
     @Published var tracks: [TrackInfo] = []
     @Published var boardIds: [Int: String] = [:]      // source (group id) -> "id=xxxx" announced by the board
+    @Published var sourceFilter = 0                    // console: 0 = every source
+    @Published var replayProgress = ""
+    @Published var replayRunning = false
+    let replayEngine = ReplayEngine()
+    private var historyDirty = false
+    private static let historyURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].appendingPathComponent("history.json")
+    private static let historyMax = 2000
     @Published var labMode = false { didSet { pipeline.labMode = labMode } }
     @Published var error: String?
     @Published var isRecording = false
@@ -76,6 +84,7 @@ final class SessionModel: ObservableObject {
     func start() {
         guard !started else { return }
         started = true
+        loadHistory()
         pipeline.onSnapshot = { [weak self] s in
             Task { @MainActor in
                 guard let self = self else { return }
@@ -89,11 +98,12 @@ final class SessionModel: ObservableObject {
                 Diag.log("[rslog] message src \(source) slot \(slot) level \(level): \(text)")
                 let m = LogMessage(date: Date(), slot: slot, level: level, text: text, source: source)
                 self.messages.insert(m, at: 0)
+                if self.messages.count > Self.historyMax { self.messages.removeLast() }
+                self.historyDirty = true
                 if source > 0, let r = text.range(of: "id=") {
                     let hex = text[r.upperBound...].prefix(4)
                     if hex.count == 4, hex.allSatisfy({ $0.isHexDigit }) { self.boardIds[source] = String(hex) }
                 }
-                if self.messages.count > 500 { self.messages.removeLast() }
                 if self.remoteClients > 0 {
                     self.remote.broadcast(["type": "message", "t": m.date.timeIntervalSince1970, "slot": slot, "level": level,
                                            "level_name": m.levelName, "text": text, "source": source])
@@ -127,6 +137,7 @@ final class SessionModel: ObservableObject {
         refreshTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self = self else { return }
+                if self.historyDirty { self.historyDirty = false; self.saveHistory() }
                 let e = self.controller.currentExposure()
                 self.camera.exposureUs = e.us; self.camera.iso = e.iso; self.camera.lensPosition = e.lens
                 let st = self.stats
@@ -172,7 +183,55 @@ final class SessionModel: ObservableObject {
         if s.zoom != old.zoom { controller.applyZoom(CGFloat(s.zoom)) }
     }
 
-    func clearMessages() { messages.removeAll(); boardIds.removeAll(); pipeline.reset() }
+    func clearMessages() { messages.removeAll(); boardIds.removeAll(); pipeline.reset(); saveHistory() }
+
+    // MARK: - history (Documents/history.json, last 2000 messages, survives relaunches)
+
+    private func loadHistory() {
+        guard let d = try? Data(contentsOf: Self.historyURL), let list = try? JSONDecoder().decode([LogMessage].self, from: d) else { return }
+        messages = list
+    }
+    private func saveHistory() {
+        let list = Array(messages.prefix(Self.historyMax))
+        DispatchQueue.global(qos: .utility).async {
+            if let d = try? JSONEncoder().encode(list) { try? d.write(to: Self.historyURL, options: .atomic) }
+        }
+    }
+
+    /// Sources seen in the console (group ids), with their board id when announced.
+    var sourcesSeen: [(id: Int, board: String?)] {
+        var ids = Set<Int>()
+        for m in messages where m.source > 0 { ids.insert(m.source) }
+        return ids.sorted().map { ($0, boardIds[$0]) }
+    }
+    var filteredMessages: [LogMessage] { sourceFilter == 0 ? messages : messages.filter { $0.source == sourceFilter } }
+
+    // MARK: - replay of a recording (Lab)
+
+    func replay(_ url: URL) {
+        guard !replayRunning else { return }
+        replayRunning = true; replayProgress = "replaying \(url.lastPathComponent)…"
+        replayEngine.run(url, onMessage: { [weak self] slot, level, text, source in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.messages.insert(LogMessage(date: Date(), slot: slot, level: level, text: text, source: source, replay: true), at: 0)
+                if self.remoteClients > 0 {
+                    self.remote.broadcast(["type": "message", "t": Date().timeIntervalSince1970, "slot": slot, "level": level,
+                                           "level_name": LogMessage.levelNames[min(level, 7)], "text": text, "source": source, "replay": true])
+                }
+            }
+        }, onProgress: { [weak self] done, total in
+            Task { @MainActor in self?.replayProgress = "frame \(done)/\(total)" }
+        }, onDone: { [weak self] r in
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.replayRunning = false
+                self.replayProgress = r.map { String(format: "%@: %d frames, %d packets, %d messages, %d tracks in %.1f s", url.lastPathComponent, $0.frames, $0.packets, $0.messages, $0.tracks, $0.seconds) } ?? "replay failed"
+                Diag.log("[replay] " + self.replayProgress)
+                self.remote.broadcast(["type": "replay", "state": "done", "summary": self.replayProgress])
+            }
+        })
+    }
 
     // MARK: - remote session (RemoteServer.swift; client: ios/tools/rslive.py)
 
@@ -264,6 +323,11 @@ final class SessionModel: ObservableObject {
             default: reply(["type": "error", "msg": "unknown key \(key)"], nil); return
             }
             reply(["type": "settings", "settings": settingsDict()], nil)
+        case "replay":
+            let name = cmd["name"] as? String ?? ""
+            let url = Recorder.directory.appendingPathComponent(name)
+            guard !name.isEmpty, !name.contains("/"), FileManager.default.fileExists(atPath: url.path) else { reply(["type": "error", "msg": "no such recording"], nil); return }
+            replay(url); reply(["type": "replay", "state": "started", "name": name], nil)
         case "frame":
             let step = max(1, cmd["step"] as? Int ?? 2)
             pipeline.frameRequest = { pb, t in

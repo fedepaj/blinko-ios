@@ -14,6 +14,7 @@ or over Wi-Fi with the address shown in the app's Settings.
   rslive.py frame OUT.png [--step 2]                       grab one frame (BGRA, columns subsampled)
   rslive.py record [--seconds 2] [--note TEXT] [--out DIR] record on the phone and pull the .rsrec (deleted on the phone unless --keep)
   rslive.py files                                          recordings kept on the phone
+  rslive.py replay NAME                                    run a recording kept on the phone through the app's receiver
   rslive.py delete NAME... | --all                         remove recordings from the phone
 
 Library use: `with RSLive() as s: s.record(2, "R4 rgb", out_dir)`.
@@ -74,6 +75,12 @@ class RSLive:
         return hdr, data
 
     def files(self): self.send({"cmd": "files"}); return self.wait({"files"})["files"]
+    def replay(self, name, on_message=None, timeout=300):
+        """Run a recording on the phone; returns the summary line, calling on_message(dict) per message."""
+        self.send({"cmd": "replay", "name": name}); self.wait({"replay"})
+        def other(kind, msg):
+            if kind == 0 and msg.get("type") == "message" and on_message: on_message(msg)
+        return self.wait({"replay"}, timeout=timeout, on_other=other).get("summary", "")
     def delete(self, names): self.send({"cmd": "delete", "names": list(names)}); return self.wait({"ok"})["removed"]
 
     def record(self, seconds=2.0, note="", out_dir=".", keep=False, progress=None):
@@ -115,6 +122,7 @@ def main():
     rc = sub.add_parser("record"); rc.add_argument("--seconds", type=float, default=2); rc.add_argument("--note", default="")
     rc.add_argument("--out", default="."); rc.add_argument("--keep", action="store_true", help="also keep the file on the phone")
     sub.add_parser("files")
+    rp = sub.add_parser("replay"); rp.add_argument("name")
     dl = sub.add_parser("delete"); dl.add_argument("names", nargs="*"); dl.add_argument("--all", action="store_true")
     a = ap.parse_args()
     with RSLive(a.host, a.port) as s:
@@ -134,6 +142,8 @@ def main():
             t0 = time.time()
             path, summary = s.record(a.seconds, a.note, a.out, keep=a.keep)
             print(f"{path}  ({summary})  in {time.time() - t0:.1f}s")
+        elif a.cmd == "replay":
+            print(s.replay(a.name, on_message=lambda m: print(f"  [{m['level_name']}] src{m['source']} {m['text']}")))
         elif a.cmd == "files":
             for f in s.files(): print(f"{f['size'] / 1e6:8.1f} MB  {f['name']}")
         elif a.cmd == "delete":
