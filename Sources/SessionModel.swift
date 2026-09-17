@@ -199,7 +199,8 @@ final class SessionModel: ObservableObject {
                 "packets": st.totalPackets, "messages": st.totalMessages, "roi": [st.roi.0, st.roi.1], "mode": st.modeName,
                 "pilots": st.pilots, "cond": st.calCond, "peak": st.peak, "sat": st.satFrac, "last_packet_age": st.lastPacketAge,
                 "exposure_us": e.exposureUs, "iso": e.iso, "cam_fps": e.fps, "width": e.width, "height": e.height,
-                "still": isStill, "motion": motionLevel, "recording": isRecording, "tracks": tr]
+                "still": isStill, "motion": motionLevel, "recording": isRecording, "tracks": tr,
+                "thermal": ["nominal", "fair", "serious", "critical"][min(ProcessInfo.processInfo.thermalState.rawValue, 3)]]
     }
 
     private func settingsDict() -> [String: Any] {

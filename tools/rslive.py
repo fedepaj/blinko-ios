@@ -101,7 +101,7 @@ def fmt_stats(s):
     tr = " ".join(f"#{t['id']}({int(t['x']*100)},{int(t['y']*100)} {t['mode']} {t['packets']}p)" for t in s.get("tracks", []))
     return (f"fps={s['fps']:.0f} pkt/s={s['pkt_per_s']:.1f} rpc={s['rows_per_chip']:.1f} mode={s['mode']} pilots={s['pilots']} "
             f"pkts={s['packets']} msgs={s['messages']} peak={s['peak']} sat={s['sat']:.3f} exp={s['exposure_us']:.0f}us iso={s['iso']:.0f} "
-            f"still={int(s['still'])} {tr}")
+            f"still={int(s['still'])} thermal={s.get('thermal', '?')} {tr}")
 
 
 def main():
