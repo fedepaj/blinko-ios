@@ -4,3 +4,4 @@
 #include "rs_rgb.h"
 #include "rs_rx.h"
 #include "rs_frame.h"
+#include "rs_multi.h"

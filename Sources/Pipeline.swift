@@ -26,11 +26,19 @@ struct DecodeStats {
     var satFrac: Float = 0
 }
 
+struct TrackInfo: Identifiable {
+    let id: Int
+    let x: Float, y: Float, radius: Float   // normalized to the native buffer (0..1 of width / height)
+    let rgb: Bool
+    let packets: Int, messages: Int, pilots: Int
+}
+
 struct Snapshot {
     var profile: [Float]
     var marks: [PacketMark]
     var stats: DecodeStats
     var slotProgress: [Float]
+    var tracks: [TrackInfo] = []
 }
 
 struct LabResult {
@@ -50,8 +58,11 @@ final class Pipeline {
     var strobeHz: Double = 2000
     var minContrast: Float = 6
 
+    let recorder = Recorder()
+    var onRecordingFinished: ((String) -> Void)?
     var onSnapshot: ((Snapshot) -> Void)?
-    var onMessage: ((Int, Int, String) -> Void)?
+    var onMessage: ((Int, Int, String, Int) -> Void)?   // slot, level, text, source track (0 = single)
+    var multiSource = true
     var onLab: ((LabResult) -> Void)?
 
     private let processor = FrameProcessor()
@@ -61,6 +72,13 @@ final class Pipeline {
         return p
     }()
     private var rxp: UnsafeMutablePointer<rs_rx_t> { rx.assumingMemoryBound(to: rs_rx_t.self) }
+    private let multi: UnsafeMutableRawPointer = {
+        let p = UnsafeMutableRawPointer.allocate(byteCount: rs_multi_sizeof(), alignment: 16)
+        rs_multi_init(p.assumingMemoryBound(to: rs_multi_t.self))
+        return p
+    }()
+    private var mp: UnsafeMutablePointer<rs_multi_t> { multi.assumingMemoryBound(to: rs_multi_t.self) }
+    private var lastTracks: [TrackInfo] = []
     private var profile = [Float](repeating: 0, count: 4096)   /* luma, for display and lab */
     private var profileB = [Float](repeating: 0, count: 4096)
     private var frameTimes: [Double] = []
@@ -93,7 +111,38 @@ final class Pipeline {
 
     init() { }
 
-    func reset() { rs_rx_init(rxp); totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0 }
+    func reset() { rs_rx_init(rxp); rs_multi_init(mp); totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0 }
+
+    /// Multi-source path: segmentation + one receiver per light, straight on the BGRA buffer.
+    /// Returns nil when no light is found (the caller falls back to the single-ROI path).
+    private func processMulti(_ pb: CVPixelBuffer, t: Double, now: Double) -> Int32? {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), bpr = CVPixelBufferGetBytesPerRow(pb)
+        let n = rs_multi_process(mp, base.assumingMemoryBound(to: UInt8.self), Int32(w), Int32(h), Int32(bpr), 4, 2, 1, 0, Float(t))
+        let count = Int(rs_multi_track_count(mp))
+        if count == 0 { lastTracks = []; return nil }
+        var tracks: [TrackInfo] = []
+        for i in 0..<count {
+            var id: Int32 = 0, mode: Int32 = 0, pilots: Int32 = 0; var cx: Float = 0, cy: Float = 0, rad: Float = 0
+            var pk: UInt32 = 0, ms: UInt32 = 0
+            if rs_multi_track_info(mp, Int32(i), &id, &cx, &cy, &rad, &mode, &pk, &ms, &pilots) != 0 {
+                tracks.append(TrackInfo(id: Int(id), x: cx / Float(w), y: cy / Float(h), radius: rad / Float(w), rgb: mode == 1,
+                                        packets: Int(pk), messages: Int(ms), pilots: Int(pilots)))
+            }
+        }
+        lastTracks = tracks
+        var msg = rs_message_t(); var tid: Int32 = 0
+        while rs_multi_pop_message(mp, &msg, &tid) != 0 {
+            totalMessages += 1
+            let text = withUnsafePointer(to: &msg.text) { $0.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) } }
+            onMessage?(Int(msg.id), Int(msg.level), text, Int(tid))
+        }
+        for _ in 0..<Int(n) { packetTimes.append(now) }
+        if n > 0 { lastPacket = now; totalPackets += Int(n) }
+        return n
+    }
 
     private func lumaProfile(_ res: FrameProcessor.Result) {
         let n = res.count
@@ -104,12 +153,34 @@ final class Pipeline {
         let now = CFAbsoluteTimeGetCurrent()
         frameTimes.append(now); frameTimes.removeAll { now - $0 > 1 }
 
+        if recorder.isRecording {
+            if !recorder.append(pb, timestamp: t) { onRecordingFinished?(recorder.summary) }
+            return
+        }
         if dumpFrames && now - lastDump > 2 { lastDump = now; dumpFrame(pb) }
         let res = processor.profiles(from: pb, axis: axis)
         guard res.count > 16 else { return }
         lumaProfile(res)
 
         if labMode { analyzeLab(pb, res); return }
+
+        if multiSource, let n = processMulti(pb, t: t, now: now) {
+            packetTimes.removeAll { now - $0 > 2 }
+            if now - lastUI > 0.08 || n > 0 {
+                lastUI = now
+                var stats = DecodeStats()
+                stats.fps = Double(frameTimes.count); stats.packetsPerSec = Double(packetTimes.count) / 2
+                stats.totalPackets = totalPackets; stats.totalMessages = totalMessages
+                stats.roi = res.roi; stats.crossLength = res.crossLength; stats.profileLength = res.count
+                stats.lastPacketAge = now - lastPacket
+                stats.peak = res.peak; stats.satFrac = res.satFrac
+                stats.rgbMode = lastTracks.contains { $0.rgb }; stats.pilots = lastTracks.map(\.pilots).reduce(0, +)
+                stats.rowsPerChip = rpcEMA
+                onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats,
+                                     slotProgress: Array(repeating: 0, count: 8), tracks: lastTracks))
+            }
+            return
+        }
 
         rxp.pointee.cfg.min_contrast = minContrast
         let n = processor.r.withUnsafeBufferPointer { rp in processor.g.withUnsafeBufferPointer { gp in processor.b.withUnsafeBufferPointer { bp in
@@ -132,7 +203,7 @@ final class Pipeline {
         while rs_rx_pop_message(rxp, &msg) != 0 {
             totalMessages += 1
             let text = withUnsafePointer(to: &msg.text) { $0.withMemoryRebound(to: CChar.self, capacity: 64) { String(cString: $0) } }
-            onMessage?(Int(msg.id), Int(msg.level), text)
+            onMessage?(Int(msg.id), Int(msg.level), text, 0)
         }
         packetTimes.removeAll { now - $0 > 2 }
         for s in 0..<8 { progress[s] = rs_asm_progress(&rxp.pointee.assembler, UInt8(s)) }

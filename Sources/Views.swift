@@ -21,7 +21,7 @@ struct LiveView: View {
     var body: some View {
         VStack(spacing: 6) {
             ZStack(alignment: .top) {
-                CameraPreview(session: model.controller.session)
+                CameraPreview(session: model.controller.session, tracks: model.tracks, lastTexts: model.lastTextPerSource)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 VStack {
                     statsBar
@@ -38,6 +38,15 @@ struct LiveView: View {
                 .background(Color.black.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
             SlotBar(progress: model.slotProgress)
+            HStack {
+                Button(action: { model.startRecording(seconds: 2) }) {
+                    Label(model.isRecording ? "REC" : "Record 2 s", systemImage: "record.circle")
+                        .foregroundStyle(model.isRecording ? .white : .red)
+                }
+                .buttonStyle(.bordered).disabled(model.isRecording)
+                TextField("note (board, motion…)", text: $model.recordingNote).textFieldStyle(.roundedBorder).font(.footnote)
+            }
+            if !model.lastRecording.isEmpty { Text(model.lastRecording).font(.caption).foregroundStyle(.secondary) }
             lastMessage
         }
         .padding(8)
@@ -122,9 +131,36 @@ struct ProfileChart: View {
 
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    var tracks: [TrackInfo] = []
+    var lastTexts: [Int: String] = [:]
+
+    /// Preview with per-source markers: a ring at each tracked light, its id and last message.
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+        private var markerLayers: [CALayer] = []
+        static let palette: [UIColor] = [.systemOrange, .systemGreen, .systemCyan, .systemPink]
+
+        func setMarkers(_ tracks: [TrackInfo], texts: [Int: String]) {
+            markerLayers.forEach { $0.removeFromSuperlayer() }; markerLayers.removeAll()
+            for t in tracks {
+                // track position is in the native (sensor) buffer; the preview layer knows the rotation
+                let p = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: CGFloat(t.x), y: CGFloat(t.y)))
+                let edge = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: CGFloat(t.x + t.radius), y: CGFloat(t.y)))
+                let r = max(12, abs(edge.x - p.x))
+                let color = Self.palette[(t.id - 1) % Self.palette.count]
+                let ring = CAShapeLayer()
+                ring.path = UIBezierPath(ovalIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)).cgPath
+                ring.strokeColor = color.cgColor; ring.fillColor = UIColor.clear.cgColor; ring.lineWidth = 2
+                let label = CATextLayer()
+                label.string = "#\(t.id) \(t.rgb ? "RGB" : "mono") \(t.packets)p" + (texts[t.id].map { "\n" + $0 } ?? "")
+                label.fontSize = 11; label.foregroundColor = color.cgColor; label.backgroundColor = UIColor.black.withAlphaComponent(0.55).cgColor
+                label.contentsScale = UIScreen.main.scale; label.alignmentMode = .left; label.isWrapped = true
+                label.frame = CGRect(x: p.x - r, y: p.y + r + 2, width: max(2 * r, 150), height: 30)
+                layer.addSublayer(ring); layer.addSublayer(label)
+                markerLayers.append(ring); markerLayers.append(label)
+            }
+        }
     }
     func makeUIView(context: Context) -> PreviewView {
         let v = PreviewView()
@@ -133,7 +169,7 @@ struct CameraPreview: UIViewRepresentable {
         v.backgroundColor = .black
         return v
     }
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    func updateUIView(_ uiView: PreviewView, context: Context) { uiView.setMarkers(tracks, texts: lastTexts) }
 }
 
 // MARK: - Console
@@ -153,6 +189,7 @@ struct ConsoleView: View {
                         VStack(alignment: .leading, spacing: 2) {
                             HStack {
                                 Text(m.levelName).font(.caption.bold()).foregroundStyle(m.color)
+                                if m.source > 0 { Text("src #\(m.source)").font(.caption2.bold()).foregroundStyle(CameraPreviewColors.color(m.source)) }
                                 Text("slot \(m.slot)").font(.caption2).foregroundStyle(.secondary)
                                 Spacer()
                                 Text(m.date, format: .dateTime.hour().minute().second()).font(.caption2).foregroundStyle(.secondary)
@@ -259,6 +296,7 @@ struct SettingsView: View {
                         Text(String(format: "Min contrast: %.0f", model.settings.minContrast))
                         Slider(value: $model.settings.minContrast, in: 2...40, step: 1)
                     }
+                    Toggle("Multi-source (track every light separately)", isOn: $model.settings.multiSource)
                     Toggle("Dump frames to Documents (debug)", isOn: $model.settings.dumpFrames)
                     Text("Stats: \(model.stats.totalPackets) packets, \(model.stats.totalMessages) messages, syncs/frame \(model.stats.syncs), crc fail \(model.stats.crcFail)")
                         .font(.footnote).foregroundStyle(.secondary)
@@ -270,5 +308,12 @@ struct SettingsView: View {
             }
             .navigationTitle("Settings")
         }
+    }
+}
+
+
+enum CameraPreviewColors {
+    static func color(_ id: Int) -> Color {
+        [Color.orange, .green, .cyan, .pink][(max(id, 1) - 1) % 4]
     }
 }
