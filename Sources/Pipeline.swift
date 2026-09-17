@@ -20,6 +20,7 @@ struct DecodeStats {
     var profileLength = 0
     var lastPacketAge: Double = 999
     var rgbMode = false
+    var modeName = "luma"      // luma | RGB (pilot-calibrated unmix) | direct (camera channels as streams)
     var pilots = 0
     var calCond: Float = 0
     var peak = 0
@@ -30,7 +31,9 @@ struct TrackInfo: Identifiable {
     let id: Int
     let x: Float, y: Float, radius: Float   // normalized to the native buffer (0..1 of width / height)
     let rgb: Bool
+    var direct: Bool = false
     let packets: Int, messages: Int, pilots: Int
+    var modeName: String { direct ? "direct" : (rgb ? "RGB" : "mono") }
 }
 
 struct Snapshot {
@@ -128,7 +131,7 @@ final class Pipeline {
             var id: Int32 = 0, mode: Int32 = 0, pilots: Int32 = 0; var cx: Float = 0, cy: Float = 0, rad: Float = 0
             var pk: UInt32 = 0, ms: UInt32 = 0
             if rs_multi_track_info(mp, Int32(i), &id, &cx, &cy, &rad, &mode, &pk, &ms, &pilots) != 0 {
-                tracks.append(TrackInfo(id: Int(id), x: cx / Float(w), y: cy / Float(h), radius: rad / Float(w), rgb: mode == 1,
+                tracks.append(TrackInfo(id: Int(id), x: cx / Float(w), y: cy / Float(h), radius: rad / Float(w), rgb: mode != 0, direct: mode == 2,
                                         packets: Int(pk), messages: Int(ms), pilots: Int(pilots)))
             }
         }
@@ -175,6 +178,7 @@ final class Pipeline {
                 stats.lastPacketAge = now - lastPacket
                 stats.peak = res.peak; stats.satFrac = res.satFrac
                 stats.rgbMode = lastTracks.contains { $0.rgb }; stats.pilots = lastTracks.map(\.pilots).reduce(0, +)
+                stats.modeName = lastTracks.map(\.modeName).joined(separator: "/")
                 stats.rowsPerChip = rpcEMA
                 onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats,
                                      slotProgress: Array(repeating: 0, count: 8), tracks: lastTracks))
@@ -218,7 +222,9 @@ final class Pipeline {
             stats.contrast = st.contrast
             stats.syncs = Int(st.syncs); stats.crcFail = Int(st.crc_fail)
             stats.totalPackets = totalPackets; stats.totalMessages = totalMessages
-            stats.rgbMode = rs_rx_mode(rxp) == 1; stats.pilots = Int(rs_rx_pilots(rxp)); stats.calCond = rs_rx_cal_cond(rxp)
+            let m = rs_rx_mode(rxp)
+            stats.rgbMode = m != 0; stats.modeName = m == 2 ? "direct" : (m == 1 ? "RGB" : "luma")
+            stats.pilots = Int(rs_rx_pilots(rxp)); stats.calCond = rs_rx_cal_cond(rxp)
             stats.peak = res.peak; stats.satFrac = res.satFrac
             stats.roi = res.roi; stats.crossLength = res.crossLength
             stats.profileLength = res.count

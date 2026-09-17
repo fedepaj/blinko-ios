@@ -107,10 +107,10 @@ final class SessionModel: ObservableObject {
                 let e = self.controller.currentExposure()
                 self.camera.exposureUs = e.us; self.camera.iso = e.iso; self.camera.lensPosition = e.lens
                 let st = self.stats
-                let tr = self.tracks.map { "#\($0.id)(\(Int($0.x * 100)),\(Int($0.y * 100)) \($0.rgb ? "rgb" : "luma") \($0.packets)p)" }.joined(separator: " ")
+                let tr = self.tracks.map { "#\($0.id)(\(Int($0.x * 100)),\(Int($0.y * 100)) \($0.modeName) \($0.packets)p)" }.joined(separator: " ")
                 Diag.log(String(format: "[rslog] stats fps=%.0f pkt/s=%.1f rpc=%.1f contrast=%.0f syncs=%d crcfail=%d pkts=%d msgs=%d roi=%d-%d/%d n=%d exp=%.1fus iso=%.0f mode=%@ pilots=%d cond=%.2f peak=%d sat=%.3f tracks=%@",
                              st.fps, st.packetsPerSec, st.rowsPerChip, st.contrast, st.syncs, st.crcFail, st.totalPackets, st.totalMessages,
-                             st.roi.0, st.roi.1, st.crossLength, st.profileLength, e.us, e.iso, st.rgbMode ? "rgb" : "luma", st.pilots, st.calCond, st.peak, st.satFrac, tr))
+                             st.roi.0, st.roi.1, st.crossLength, st.profileLength, e.us, e.iso, st.modeName, st.pilots, st.calCond, st.peak, st.satFrac, tr))
             }
         }
     }

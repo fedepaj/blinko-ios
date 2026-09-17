@@ -59,7 +59,7 @@ struct LiveView: View {
             stat("pkt/s", String(format: "%.1f", model.stats.packetsPerSec))
             stat("rows/chip", model.stats.rowsPerChip > 0 ? String(format: "%.1f", model.stats.rowsPerChip) : "-")
             stat("contrast", String(format: "%.0f", model.stats.contrast))
-            stat("mode", model.stats.rgbMode ? "RGB" : "luma")
+            stat("mode", model.stats.modeName)
             stat("peak", "\(model.stats.peak)")
             stat("pilots", "\(model.stats.pilots)")
             stat("msgs", "\(model.stats.totalMessages)")
@@ -153,7 +153,7 @@ struct CameraPreview: UIViewRepresentable {
                 ring.path = UIBezierPath(ovalIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)).cgPath
                 ring.strokeColor = color.cgColor; ring.fillColor = UIColor.clear.cgColor; ring.lineWidth = 2
                 let label = CATextLayer()
-                label.string = "#\(t.id) \(t.rgb ? "RGB" : "mono") \(t.packets)p" + (texts[t.id].map { "\n" + $0 } ?? "")
+                label.string = "#\(t.id) \(t.modeName) \(t.packets)p" + (texts[t.id].map { "\n" + $0 } ?? "")
                 label.fontSize = 11; label.foregroundColor = color.cgColor; label.backgroundColor = UIColor.black.withAlphaComponent(0.55).cgColor
                 label.contentsScale = UIScreen.main.scale; label.alignmentMode = .left; label.isWrapped = true
                 label.frame = CGRect(x: p.x - r, y: p.y + r + 2, width: max(2 * r, 150), height: 30)
