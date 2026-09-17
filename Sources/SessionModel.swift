@@ -198,7 +198,7 @@ final class SessionModel: ObservableObject {
 
     private func statsDict() -> [String: Any] {
         let st = stats, e = camera
-        let tr: [[String: Any]] = tracks.map { ["id": $0.id, "x": $0.x, "y": $0.y, "radius": $0.radius, "mode": $0.modeName,
+        let tr: [[String: Any]] = tracks.map { ["id": $0.id, "group": $0.group, "board": boardIds[$0.group] ?? "", "x": $0.x, "y": $0.y, "radius": $0.radius, "mode": $0.modeName,
                                                  "packets": $0.packets, "messages": $0.messages, "pilots": $0.pilots] }
         return ["type": "stats", "t": Date().timeIntervalSince1970, "fps": st.fps, "pkt_per_s": st.packetsPerSec,
                 "rows_per_chip": st.rowsPerChip, "contrast": st.contrast, "syncs": st.syncs, "crc_fail": st.crcFail,
