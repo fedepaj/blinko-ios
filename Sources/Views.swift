@@ -37,7 +37,10 @@ struct LiveView: View {
                 .frame(height: 110)
                 .background(Color.black.opacity(0.6))
                 .clipShape(RoundedRectangle(cornerRadius: 8))
-            SlotBar(progress: model.slotProgress)
+            HStack(alignment: .top, spacing: 6) {
+                Text(model.progressLabel.isEmpty ? "slots" : model.progressLabel).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary).frame(width: 30, alignment: .leading)
+                SlotBar(progress: model.slotProgress)
+            }
             if model.settings.recordingEnabled {
                 HStack {
                     Button(action: { model.startRecording(seconds: 2) }) {

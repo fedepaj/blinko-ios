@@ -43,6 +43,7 @@ struct Snapshot {
     var stats: DecodeStats
     var slotProgress: [Float]
     var tracks: [TrackInfo] = []
+    var progressLabel = ""      // source the slot bars refer to
 }
 
 struct LabResult {
@@ -67,6 +68,8 @@ final class Pipeline {
     var onSnapshot: ((Snapshot) -> Void)?
     var onMessage: ((Int, Int, String, Int) -> Void)?   // slot, level, text, source track (0 = single)
     var multiSource = true
+    /// Which logical source the slot bars follow in multi-source mode (0 = the busiest light).
+    var progressSource = 0
     var onLab: ((LabResult) -> Void)?
 
     private let processor = FrameProcessor()
@@ -83,6 +86,8 @@ final class Pipeline {
     }()
     private var mp: UnsafeMutablePointer<rs_multi_t> { multi.assumingMemoryBound(to: rs_multi_t.self) }
     private var lastTracks: [TrackInfo] = []
+    private var progressLabel = ""
+    private var lastProgress = [Float](repeating: 0, count: 8)
     private var profile = [Float](repeating: 0, count: 4096)   /* luma, for display and lab */
     private var profileB = [Float](repeating: 0, count: 4096)
     private var frameTimes: [Double] = []
@@ -161,6 +166,18 @@ final class Pipeline {
             }
         }
         lastTracks = tracks
+        // slot bars: assembler fill of the followed source (its leader track), else the busiest track
+        var best = -1
+        for i in 0..<count {
+            let t = tracks[i]
+            if progressSource > 0 { if t.group == progressSource && (best < 0 || t.id == t.group) { best = i } }
+            else if best < 0 || t.packets > tracks[best].packets { best = i }
+        }
+        if best >= 0, let rx = rs_multi_track_rx(mp, Int32(best)) {
+            let asmPtr = (UnsafeRawPointer(rx) + MemoryLayout<rs_rx_t>.offset(of: \rs_rx_t.assembler)!).assumingMemoryBound(to: rs_asm_t.self)
+            for s in 0..<8 { lastProgress[s] = rs_asm_progress(asmPtr, UInt8(s)) }
+            progressLabel = "#\(tracks[best].group)"
+        } else { for s in 0..<8 { lastProgress[s] = 0 }; progressLabel = "" }
         var msg = rs_message_t(); var tid: Int32 = 0
         while rs_multi_pop_message(mp, &msg, &tid) != 0 {
             totalMessages += 1
@@ -215,7 +232,7 @@ final class Pipeline {
                 stats.modeName = lastTracks.map(\.modeName).joined(separator: "/")
                 stats.rowsPerChip = rpcEMA
                 onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats,
-                                     slotProgress: Array(repeating: 0, count: 8), tracks: lastTracks))
+                                     slotProgress: lastProgress, tracks: lastTracks, progressLabel: progressLabel))
             }
             return
         }

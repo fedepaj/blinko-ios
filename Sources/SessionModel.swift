@@ -46,8 +46,9 @@ final class SessionModel: ObservableObject {
     @Published var camera = CameraInfo()
     @Published var lab: LabResult?
     @Published var tracks: [TrackInfo] = []
+    @Published var progressLabel = ""
     @Published var boardIds: [Int: String] = [:]      // source (group id) -> "id=xxxx" announced by the board
-    @Published var sourceFilter = 0                    // console: 0 = every source
+    @Published var sourceFilter = 0 { didSet { pipeline.progressSource = sourceFilter } }   // console: 0 = every source
     @Published var replayProgress = ""
     @Published var replayRunning = false
     let replayEngine = ReplayEngine()
@@ -88,7 +89,7 @@ final class SessionModel: ObservableObject {
         pipeline.onSnapshot = { [weak self] s in
             Task { @MainActor in
                 guard let self = self else { return }
-                self.profile = s.profile; self.marks = s.marks; self.stats = s.stats; self.tracks = s.tracks
+                self.profile = s.profile; self.marks = s.marks; self.stats = s.stats; self.tracks = s.tracks; self.progressLabel = s.progressLabel
                 if !s.slotProgress.isEmpty { self.slotProgress = s.slotProgress }
             }
         }
