@@ -19,7 +19,7 @@ final class Recorder {
 
     private(set) var isRecording = false
     private var handle: FileHandle?
-    private var url: URL?
+    private(set) var url: URL?
     private var deadline: Double = 0
     private var frames = 0
     private var bytesWritten = 0

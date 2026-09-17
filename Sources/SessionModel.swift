@@ -29,6 +29,7 @@ struct CaptureSettings: Equatable {
     var strobeHz: Double = 2000
     var dumpFrames = false
     var multiSource = true        /* segment the frame and decode every light separately */
+    var remoteEnabled = true      /* TCP remote session server (Settings > Debug) */
 }
 
 @MainActor
@@ -49,6 +50,11 @@ final class SessionModel: ObservableObject {
     @Published var lastRecording = ""
     @Published var recordingNote = ""
     @Published var settings = CaptureSettings() { didSet { applySettings(old: oldValue) } }
+    @Published var remoteClients = 0
+    @Published var remoteAddress = ""
+    let remote = RemoteServer()
+    private var remoteStatsTimer: Timer?
+    private var pendingRecordReply: (reply: ([String: Any], Data?) -> Void, send: Bool, keep: Bool)?
 
     let controller = CameraController()
     let pipeline = Pipeline()
@@ -78,14 +84,23 @@ final class SessionModel: ObservableObject {
             Task { @MainActor in
                 guard let self = self else { return }
                 Diag.log("[rslog] message src \(source) slot \(slot) level \(level): \(text)")
-                self.messages.insert(LogMessage(date: Date(), slot: slot, level: level, text: text, source: source), at: 0)
+                let m = LogMessage(date: Date(), slot: slot, level: level, text: text, source: source)
+                self.messages.insert(m, at: 0)
                 if self.messages.count > 500 { self.messages.removeLast() }
+                if self.remoteClients > 0 {
+                    self.remote.broadcast(["type": "message", "t": m.date.timeIntervalSince1970, "slot": slot, "level": level,
+                                           "level_name": m.levelName, "text": text, "source": source])
+                }
                 self.haptic.notificationOccurred(level >= 4 && level != 5 ? .error : .success)
             }
         }
         pipeline.recorder.latestMotion = { [weak self] in (self?.motion.gyro ?? [0, 0, 0], self?.motion.accel ?? [0, 0, 0]) }
         pipeline.onRecordingFinished = { [weak self] summary in
-            Task { @MainActor in self?.isRecording = false; self?.lastRecording = summary; Diag.log("[rslog] recording done: \(summary)") }
+            Task { @MainActor in
+                guard let self = self else { return }
+                self.isRecording = false; self.lastRecording = summary; Diag.log("[rslog] recording done: \(summary)")
+                self.finishRemoteRecording()
+            }
         }
         pipeline.onLab = { [weak self] r in
             Diag.log(String(format: "[rslog] lab axis=%@ period=%.2f strength=%.2f other=%.2f rowTime=%.2fus readout=%.2fms n=%d", r.axis.rawValue, r.periodRows, r.strength, r.otherStrength, r.rowTimeUs, r.readoutMs, r.count))
@@ -96,6 +111,7 @@ final class SessionModel: ObservableObject {
             Task { @MainActor in self?.isStill = still; self?.motionLevel = level }
         }
         motion.start()
+        if settings.remoteEnabled { startRemote() }
         AVCaptureDevice.requestAccess(for: .video) { ok in
             Task { @MainActor in
                 if ok { self.configureCamera() } else { self.error = "Camera access denied. Enable it in Settings." }
@@ -142,6 +158,7 @@ final class SessionModel: ObservableObject {
         pipeline.strobeHz = s.strobeHz
         pipeline.dumpFrames = s.dumpFrames
         pipeline.multiSource = s.multiSource
+        if s.remoteEnabled != old.remoteEnabled { s.remoteEnabled ? startRemote() : stopRemote() }
         if s.camera != old.camera || s.fps != old.fps { configureCamera(); return }
         if s.exposure != old.exposure || s.iso != old.iso { controller.applyExposure(fraction: s.exposure, isoFraction: s.iso) }
         if s.lensPosition != old.lensPosition { controller.applyLens(position: s.lensPosition) }
@@ -149,6 +166,112 @@ final class SessionModel: ObservableObject {
     }
 
     func clearMessages() { messages.removeAll(); pipeline.reset() }
+
+    // MARK: - remote session (RemoteServer.swift; client: ios/tools/rslive.py)
+
+    func startRemote() {
+        remote.onCommand = { [weak self] cmd, reply in Task { @MainActor in self?.handleRemote(cmd, reply) } }
+        remote.onClientsChanged = { [weak self] n in Task { @MainActor in self?.remoteClients = n } }
+        remote.start()
+        remoteAddress = "\(RemoteServer.localIPv4() ?? "no Wi-Fi"):\(RemoteServer.port)"
+        remoteStatsTimer?.invalidate()
+        remoteStatsTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self = self, self.remoteClients > 0 else { return }
+                self.remote.broadcast(self.statsDict())
+            }
+        }
+        Diag.log("[remote] server on \(remoteAddress)")
+    }
+
+    func stopRemote() {
+        remoteStatsTimer?.invalidate(); remoteStatsTimer = nil
+        remote.stop(); remoteClients = 0
+    }
+
+    private func statsDict() -> [String: Any] {
+        let st = stats, e = camera
+        let tr: [[String: Any]] = tracks.map { ["id": $0.id, "x": $0.x, "y": $0.y, "radius": $0.radius, "mode": $0.modeName,
+                                                 "packets": $0.packets, "messages": $0.messages, "pilots": $0.pilots] }
+        return ["type": "stats", "t": Date().timeIntervalSince1970, "fps": st.fps, "pkt_per_s": st.packetsPerSec,
+                "rows_per_chip": st.rowsPerChip, "contrast": st.contrast, "syncs": st.syncs, "crc_fail": st.crcFail,
+                "packets": st.totalPackets, "messages": st.totalMessages, "roi": [st.roi.0, st.roi.1], "mode": st.modeName,
+                "pilots": st.pilots, "cond": st.calCond, "peak": st.peak, "sat": st.satFrac, "last_packet_age": st.lastPacketAge,
+                "exposure_us": e.exposureUs, "iso": e.iso, "cam_fps": e.fps, "width": e.width, "height": e.height,
+                "still": isStill, "motion": motionLevel, "recording": isRecording, "tracks": tr]
+    }
+
+    private func settingsDict() -> [String: Any] {
+        let s = settings
+        return ["camera": s.camera.rawValue, "fps": s.fps, "exposure": s.exposure, "iso": s.iso, "lensPosition": s.lensPosition,
+                "zoom": s.zoom, "axis": s.axis.rawValue, "minContrast": s.minContrast, "multiSource": s.multiSource,
+                "remoteEnabled": s.remoteEnabled, "camera_name": camera.name, "frame_rates": camera.frameRates,
+                "min_exposure_us": camera.minExposureUs, "iso_range": [camera.minISO, camera.maxISO], "max_zoom": camera.maxZoom]
+    }
+
+    private func handleRemote(_ cmd: [String: Any], _ reply: @escaping ([String: Any], Data?) -> Void) {
+        let name = cmd["cmd"] as? String ?? ""
+        switch name {
+        case "get":
+            reply(["type": "settings", "settings": settingsDict()], nil)
+        case "stats":
+            reply(statsDict(), nil)
+        case "messages":
+            let list: [[String: Any]] = messages.reversed().map { ["t": $0.date.timeIntervalSince1970, "slot": $0.slot, "level": $0.level,
+                                                                     "level_name": $0.levelName, "text": $0.text, "source": $0.source] }
+            reply(["type": "messages", "messages": list], nil)
+        case "reset":
+            clearMessages(); reply(["type": "ok", "cmd": name], nil)
+        case "set":
+            guard let key = cmd["key"] as? String else { reply(["type": "error", "msg": "set needs key/value"], nil); return }
+            let v = cmd["value"]
+            let d = (v as? Double) ?? (v as? NSNumber)?.doubleValue ?? Double((v as? String) ?? "") ?? 0
+            let b = (v as? Bool) ?? (d != 0)
+            switch key {
+            case "fps": settings.fps = d
+            case "exposure": settings.exposure = d
+            case "iso": settings.iso = d
+            case "lensPosition": settings.lensPosition = Float(d)
+            case "zoom": settings.zoom = d
+            case "minContrast": settings.minContrast = Float(d)
+            case "multiSource": settings.multiSource = b
+            case "axis": if let a = ScanAxis(rawValue: (v as? String ?? "").capitalized) { settings.axis = a }
+            case "camera": if let c = CameraKind(rawValue: (v as? String ?? "").capitalized) { settings.camera = c }
+            case "note": recordingNote = v as? String ?? ""
+            default: reply(["type": "error", "msg": "unknown key \(key)"], nil); return
+            }
+            reply(["type": "settings", "settings": settingsDict()], nil)
+        case "frame":
+            let step = max(1, cmd["step"] as? Int ?? 2)
+            pipeline.frameRequest = { pb, t in
+                guard let f = Pipeline.subsampled(pb, step: step) else { reply(["type": "error", "msg": "no frame"], nil); return }
+                reply(["type": "frame", "w": f.w, "h": f.h, "step": step, "format": "BGRA", "t": t], f.data)
+            }
+        case "record":
+            guard !isRecording else { reply(["type": "error", "msg": "already recording"], nil); return }
+            let seconds = cmd["seconds"] as? Double ?? 2
+            recordingNote = cmd["note"] as? String ?? recordingNote
+            pendingRecordReply = (reply, cmd["send"] as? Bool ?? true, cmd["keep"] as? Bool ?? true)
+            startRecording(seconds: seconds)
+            reply(["type": "recording", "state": "started", "seconds": seconds, "note": recordingNote], nil)
+        default:
+            reply(["type": "error", "msg": "unknown cmd \(name)"], nil)
+        }
+    }
+
+    private func finishRemoteRecording() {
+        guard let p = pendingRecordReply else { return }
+        pendingRecordReply = nil
+        guard let url = pipeline.recorder.url else { p.reply(["type": "error", "msg": "no recording file"], nil); return }
+        let summary = lastRecording
+        p.reply(["type": "recording", "state": "done", "file": url.lastPathComponent, "summary": summary], nil)
+        guard p.send else { return }
+        DispatchQueue.global(qos: .utility).async {
+            guard let data = try? Data(contentsOf: url) else { p.reply(["type": "error", "msg": "cannot read recording"], nil); return }
+            p.reply(["type": "file", "name": url.lastPathComponent, "size": data.count], data)
+            if !p.keep { try? FileManager.default.removeItem(at: url) }
+        }
+    }
 
     func startRecording(seconds: Double) {
         guard !isRecording else { return }

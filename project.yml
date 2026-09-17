@@ -39,6 +39,7 @@ targets:
         CFBundleDisplayName: RSLog
         NSCameraUsageDescription: RSLog reads optical log messages from a blinking LED through the camera.
         NSMotionUsageDescription: Motion data is used to tell you when to hold the phone still.
+        NSLocalNetworkUsageDescription: The remote session lets a computer on the local network drive the app and receive recordings.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIRequiredDeviceCapabilities: [arm64, video-camera]

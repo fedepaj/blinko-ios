@@ -93,6 +93,28 @@ final class Pipeline {
     private var markSeq = 0
     private var lastDump: Double = 0
     var dumpFrames = false
+    /// One-shot: the next frame is handed to this closure (remote "frame" command), then cleared.
+    var frameRequest: ((CVPixelBuffer, Double) -> Void)?
+
+    /// BGRA pixels with every `step`-th column kept (rows stay full), as the recorder stores them.
+    static func subsampled(_ pb: CVPixelBuffer, step: Int) -> (data: Data, w: Int, h: Int)? {
+        CVPixelBufferLockBaseAddress(pb, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
+        let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), bpr = CVPixelBufferGetBytesPerRow(pb)
+        let st = max(1, step), ow = w / st
+        var out = Data(count: ow * h * 4)
+        out.withUnsafeMutableBytes { dstRaw in
+            let dst = dstRaw.baseAddress!.assumingMemoryBound(to: UInt32.self)
+            for r in 0..<h {
+                let s = UnsafeRawPointer(base).advanced(by: r * bpr).assumingMemoryBound(to: UInt32.self)
+                let d = dst.advanced(by: r * ow)
+                var c = 0
+                while c < ow { d[c] = s[c * st]; c += 1 }
+            }
+        }
+        return (out, ow, h)
+    }
 
     /// Save the full luma plane as PGM (Documents/frame.pgm) for offline analysis.
     private func dumpFrame(_ pb: CVPixelBuffer) {
@@ -155,6 +177,7 @@ final class Pipeline {
     func process(_ pb: CVPixelBuffer, time t: Double) {
         let now = CFAbsoluteTimeGetCurrent()
         frameTimes.append(now); frameTimes.removeAll { now - $0 > 1 }
+        if let req = frameRequest { frameRequest = nil; req(pb, t) }
 
         if recorder.isRecording {
             if !recorder.append(pb, timestamp: t) { onRecordingFinished?(recorder.summary) }

@@ -297,9 +297,16 @@ struct SettingsView: View {
                         Slider(value: $model.settings.minContrast, in: 2...40, step: 1)
                     }
                     Toggle("Multi-source (track every light separately)", isOn: $model.settings.multiSource)
-                    Toggle("Dump frames to Documents (debug)", isOn: $model.settings.dumpFrames)
                     Text("Stats: \(model.stats.totalPackets) packets, \(model.stats.totalMessages) messages, syncs/frame \(model.stats.syncs), crc fail \(model.stats.crcFail)")
                         .font(.footnote).foregroundStyle(.secondary)
+                }
+                Section("Debug") {
+                    Toggle("Remote session (TCP port \(RemoteServer.port))", isOn: $model.settings.remoteEnabled)
+                    if model.settings.remoteEnabled {
+                        Text("Wi-Fi: \(model.remoteAddress)  ·  USB: pymobiledevice3 usbmux forward 7777 7777  ·  clients: \(model.remoteClients)")
+                            .font(.footnote).foregroundStyle(.secondary)
+                    }
+                    Toggle("Dump frames to Documents", isOn: $model.settings.dumpFrames)
                 }
                 Section("Tips") {
                     Text("Hold the phone 1–3 cm from the board so the defocused LED fills the frame. Keep exposure at the shortest setting and lens position at 1.0. Use 60 fps or higher.")
