@@ -4,6 +4,8 @@
 # Signing identifiers come from blinko.env (see blinko.env.example).
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
+PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"   # xcodegen is usually installed by Homebrew
+command -v xcodegen >/dev/null || { echo "xcodegen not found: brew install xcodegen" >&2; exit 2; }
 [ -f "$HERE/blinko.env" ] && . "$HERE/blinko.env"
 : "${BLINKO_BUNDLE_ID:=com.example.blinko}"
 [ -n "$BLINKO_TEAM_ID" ] || { echo "set BLINKO_TEAM_ID (cp blinko.env.example blinko.env and edit)" >&2; exit 2; }
