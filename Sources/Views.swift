@@ -285,7 +285,7 @@ struct LabView: View {
                         row("Frame readout", r.readoutMs > 0 ? String(format: "%.2f ms", r.readoutMs) : "-")
                         if r.rowTimeUs > 0 {
                             row("Min chip (4 rows)", String(format: "%.0f µs", 4 * r.rowTimeUs))
-                            row("Packet height @100µs", String(format: "%.0f rows", 59 * 100 / r.rowTimeUs))
+                            row("Packet height @30µs", String(format: "%.0f rows", 67 * 30 / r.rowTimeUs))   /* RS_PKT_CHIPS, a computed macro Swift cannot import */
                         }
                         if r.otherStrength > r.strength * 1.5 && r.otherStrength > 0.2 {
                             Button("Bands are on the other axis → switch") {
