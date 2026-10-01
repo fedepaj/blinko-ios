@@ -20,7 +20,7 @@ final class FrameProcessor {
         var info = rs_frame_info_t()
         let px = base.assumingMemoryBound(to: UInt8.self)
         r.withUnsafeMutableBufferPointer { rp in g.withUnsafeMutableBufferPointer { gp in b.withUnsafeMutableBufferPointer { bp in
-            rs_frame_profile_rgb(px, Int32(w), Int32(h), Int32(bpr), 4, 2, 1, 0, axis == .rows ? 0 : 1,
+            rs_frame_profile_rgb(px, Int32(axis == .rows ? w / 4 : w), Int32(h), Int32(bpr), axis == .rows ? 16 : 4, 2, 1, 0, axis == .rows ? 0 : 1,   /* every 4th column on the row axis */
                                  rp.baseAddress, gp.baseAddress, bp.baseAddress, &info)
         } } }
         var res = Result(); res.width = w; res.height = h

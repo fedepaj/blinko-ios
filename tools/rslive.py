@@ -14,6 +14,7 @@ or over Wi-Fi with the address shown in the app's Settings.
   rslive.py frame OUT.png [--step 2]                       grab one frame (BGRA, columns subsampled)
   rslive.py record [--seconds 2] [--note TEXT] [--out DIR] record on the phone and pull the .rsrec (deleted on the phone unless --keep)
   rslive.py files                                          recordings kept on the phone
+  rslive.py pull NAME [--out DIR]                          fetch a recording kept on the phone (Android)
   rslive.py replay NAME                                    run a recording kept on the phone through the app's receiver
   rslive.py delete NAME... | --all                         remove recordings from the phone
 
@@ -71,10 +72,18 @@ class RSLive:
         """(header dict, bytes) — BGRA rows, header w/h already subsampled."""
         self.send({"cmd": "frame", "step": step})
         hdr = self.wait({"frame"}); kind, data = self.recv()
-        assert kind == 1 and len(data) == hdr["w"] * hdr["h"] * 4
+        assert kind == 1 and len(data) == hdr["w"] * hdr["h"] * (4 if hdr.get("format") != "PROFILES" else 4)
         return hdr, data
 
     def files(self): self.send({"cmd": "files"}); return self.wait({"files"})["files"]
+    def pull(self, name, out_dir="."):
+        self.send({"cmd": "pull", "name": name})
+        hdr = self.wait({"file"}, timeout=300); kind, data = self.recv()
+        assert kind == 1 and len(data) == hdr["size"]
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, hdr["name"])
+        with open(path, "wb") as f: f.write(data)
+        return path
     def replay(self, name, on_message=None, timeout=300):
         """Run a recording on the phone; returns the summary line, calling on_message(dict) per message."""
         self.send({"cmd": "replay", "name": name}); self.wait({"replay"})
@@ -100,6 +109,11 @@ class RSLive:
 def frame_to_png(hdr, data, out):
     import numpy as np
     from PIL import Image
+    if hdr.get("format") == "PROFILES":                       # Android RAW mode: r, g, b per-row profiles as float32
+        a = np.frombuffer(data, np.float32).reshape(3, hdr["h"])
+        np.save(out.rsplit(".", 1)[0] + ".npy", a); print("profiles saved as .npy (r, g, b x rows)")
+        import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
+        plt.figure(figsize=(16, 5)); plt.plot(a[0], "r"); plt.plot(a[1], "g"); plt.plot(a[2], "b"); plt.grid(True); plt.savefig(out, dpi=70); return
     a = np.frombuffer(data, np.uint8).reshape(hdr["h"], hdr["w"], 4)
     Image.fromarray(a[:, :, [2, 1, 0]]).save(out)
 
@@ -108,7 +122,8 @@ def fmt_stats(s):
     tr = " ".join(f"#{t.get('group', t['id'])}{'·' + str(t['id']) if t.get('group', t['id']) != t['id'] else ''}{'[' + t['board'] + ']' if t.get('board') else ''}({int(t['x']*100)},{int(t['y']*100)} {t['mode']} {t['packets']}p)" for t in s.get("tracks", []))
     return (f"fps={s['fps']:.0f} pkt/s={s['pkt_per_s']:.1f} rpc={s['rows_per_chip']:.1f} mode={s['mode']} pilots={s['pilots']} "
             f"pkts={s['packets']} msgs={s['messages']} peak={s['peak']} sat={s['sat']:.3f} exp={s['exposure_us']:.0f}us iso={s['iso']:.0f} "
-            f"still={int(s['still'])} thermal={s.get('thermal', '?')} {tr}")
+            f"still={int(s['still'])} thermal={s.get('thermal', '?')}" + (f" exp_actual={s['exposure_actual_us']:.1f}us readout={s['readout_ms']:.2f}ms" if s.get('readout_ms') else "") + f" {tr}"
+            + (f"  lab: period={s['lab']['period_rows']:.2f} rows strength={s['lab']['strength']:.2f} row={s['lab']['row_time_us']:.2f}us readout={s['lab']['readout_ms']:.2f}ms" if s.get('lab') else ""))
 
 
 def main():
@@ -122,6 +137,7 @@ def main():
     rc = sub.add_parser("record"); rc.add_argument("--seconds", type=float, default=2); rc.add_argument("--note", default="")
     rc.add_argument("--out", default="."); rc.add_argument("--keep", action="store_true", help="also keep the file on the phone")
     sub.add_parser("files")
+    pl = sub.add_parser("pull"); pl.add_argument("name"); pl.add_argument("--out", default=".")
     rp = sub.add_parser("replay"); rp.add_argument("name")
     dl = sub.add_parser("delete"); dl.add_argument("names", nargs="*"); dl.add_argument("--all", action="store_true")
     a = ap.parse_args()
@@ -144,6 +160,7 @@ def main():
             print(f"{path}  ({summary})  in {time.time() - t0:.1f}s")
         elif a.cmd == "replay":
             print(s.replay(a.name, on_message=lambda m: print(f"  [{m['level_name']}] src{m['source']} {m['text']}")))
+        elif a.cmd == "pull": print(s.pull(a.name, a.out))
         elif a.cmd == "files":
             for f in s.files(): print(f"{f['size'] / 1e6:8.1f} MB  {f['name']}")
         elif a.cmd == "delete":

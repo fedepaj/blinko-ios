@@ -122,7 +122,7 @@ final class SessionModel: ObservableObject {
         }
         pipeline.onLab = { [weak self] r in
             Diag.log(String(format: "[blinko] lab axis=%@ period=%.2f strength=%.2f other=%.2f rowTime=%.2fus readout=%.2fms n=%d", r.axis.rawValue, r.periodRows, r.strength, r.otherStrength, r.rowTimeUs, r.readoutMs, r.count))
-            Task { @MainActor in self?.lab = r }
+            Task { @MainActor in self?.lab = r; if r.rowTimeUs > 2 && r.rowTimeUs < 30 && r.strength > 0.3 { self?.pipeline.rowUs = r.rowTimeUs } }
         }
         controller.frameHandler = { [weak self] pb, t in self?.pipeline.process(pb, time: t) }
         motion.onUpdate = { [weak self] still, level in
@@ -141,6 +141,7 @@ final class SessionModel: ObservableObject {
                 if self.historyDirty { self.historyDirty = false; self.saveHistory() }
                 let e = self.controller.currentExposure()
                 self.camera.exposureUs = e.us; self.camera.iso = e.iso; self.camera.lensPosition = e.lens
+                self.pipeline.exposureUs = e.us
                 let st = self.stats
                 let tr = self.tracks.map { "#\($0.id)(\(Int($0.x * 100)),\(Int($0.y * 100)) \($0.modeName) \($0.packets)p)" }.joined(separator: " ")
                 Diag.log(String(format: "[blinko] stats fps=%.0f pkt/s=%.1f rpc=%.1f contrast=%.0f syncs=%d crcfail=%d pkts=%d msgs=%d roi=%d-%d/%d n=%d exp=%.1fus iso=%.0f mode=%@ pilots=%d cond=%.2f peak=%d sat=%.3f tracks=%@",

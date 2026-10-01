@@ -62,6 +62,9 @@ final class Pipeline {
     var labMode = false
     var strobeHz: Double = 2000
     var minContrast: Float = 6
+    /// Camera exposure (µs) and sensor row time (µs) for the exposure-aware detector; 0 = unknown.
+    var exposureUs: Double = 0
+    var rowUs: Double = 5.4
 
     let recorder = Recorder()
     var onRecordingFinished: ((String) -> Void)?
@@ -153,7 +156,9 @@ final class Pipeline {
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), bpr = CVPixelBufferGetBytesPerRow(pb)
-        let n = rs_multi_process(mp, base.assumingMemoryBound(to: UInt8.self), Int32(w), Int32(h), Int32(bpr), 4, 2, 1, 0, Float(t))
+        // every 4th column (pixel stride 16 bytes): profiles are column averages, and 480 columns are what the
+        // recordings and the Android app use; 4x less pixel work per frame
+        let n = rs_multi_process(mp, base.assumingMemoryBound(to: UInt8.self), Int32(w / 4), Int32(h), Int32(bpr), 16, 2, 1, 0, Float(t))
         let count = Int(rs_multi_track_count(mp))
         if count == 0 { lastTracks = []; return nil }
         var tracks: [TrackInfo] = []
@@ -244,6 +249,8 @@ final class Pipeline {
         }
 
         rxp.pointee.cfg.min_contrast = minContrast
+        rxp.pointee.cfg.exposure_rows = Float(exposureUs > 0 && rowUs > 0 ? exposureUs / rowUs : 0)
+        rs_multi_set_exposure_rows(mp, Float(exposureUs > 0 && rowUs > 0 ? exposureUs / rowUs : 0))
         let n = processor.r.withUnsafeBufferPointer { rp in processor.g.withUnsafeBufferPointer { gp in processor.b.withUnsafeBufferPointer { bp in
             rs_rx_process(rxp, rp.baseAddress, gp.baseAddress, bp.baseAddress, Int32(res.count), Float(t))
         } } }
