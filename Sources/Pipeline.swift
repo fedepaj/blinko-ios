@@ -145,9 +145,20 @@ final class Pipeline {
         try? data.write(to: url)
     }
 
-    init() { }
+    init() { setHooks() }
 
-    func reset() { rs_rx_init(rxp); rs_multi_init(mp); totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0 }
+    /// The receiver's parallel hook: a light's three channels decode concurrently (GCD); the
+    /// decoder's scratch is thread-local (RS_DEC_THREADS in project.yml).
+    private func setHooks() {
+        let par: rs_parallel_fn = { _, count, job, ctx in
+            guard let job = job else { return }
+            DispatchQueue.concurrentPerform(iterations: Int(count)) { job(ctx, Int32($0)) }
+        }
+        rxp.pointee.parallel = par
+        rs_multi_set_parallel(mp, par, nil)
+    }
+
+    func reset() { rs_rx_init(rxp); rs_multi_init(mp); setHooks(); totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0 }
 
     /// Multi-source path: segmentation + one receiver per light, straight on the BGRA buffer.
     /// Returns nil when no light is found (the caller falls back to the single-ROI path).

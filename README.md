@@ -29,7 +29,8 @@ camera preview with a marker ring per tracked light, the profile chart and the
 stats bar; **Console** lists the decoded messages by source and slot; **Lab**
 holds the strobe calibration and the replay list; **Settings** has the camera
 controls (fps, exposure, ISO, lens, zoom), the decoder options and a Debug
-section. Hold the phone 1–3 cm from the board.
+section. Hold the phone 1–3 cm from the board. A light's three channels are
+decoded concurrently (GCD), which keeps the multi-source path near 100 fps.
 
 ## Remote session
 
