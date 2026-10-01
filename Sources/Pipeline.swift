@@ -154,7 +154,7 @@ final class Pipeline {
             guard let job = job else { return }
             DispatchQueue.concurrentPerform(iterations: Int(count)) { job(ctx, Int32($0)) }
         }
-        rxp.pointee.parallel = par
+        rs_rx_set_parallel(rxp, par, nil)
         rs_multi_set_parallel(mp, par, nil)
     }
 
