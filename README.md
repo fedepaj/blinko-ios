@@ -32,6 +32,27 @@ controls (fps, exposure, ISO, lens, zoom), the decoder options and a Debug
 section. Hold the phone 1–3 cm from the board. A light's three channels are
 decoded concurrently (GCD), which keeps the multi-source path near 100 fps.
 
+## Throughput and limits
+
+What this phone gets, measured with a Nano R4 one or two centimetres from the
+camera (one packet carries one message byte; a 20-character message takes
+about 22 packets):
+
+| board setting | packets/s | 20-char message |
+|---|---|---|
+| T = 45–60 µs, rep 1 (default 60) | 90–110 | under 0.5 s |
+| T = 60 µs, rep 2 (blob cut by the frame edge, LED saturating) | 50–110 | 0.5–1 s |
+| T = 120 µs, rep 3 (the death loop's setting) | 25–35 | about 1 s |
+
+Limits: the LED blob must be taller than a packet in the frame (about 320 rows
+at T = 60 µs on this sensor), so a few centimetres with the main camera; the
+exposure is 15 µs at 120 fps, so any T works; a LED that saturates the sensor
+(`sat` above 0.3 in the stats bar) loses packets, lower its brightness on the
+board (`bright 40`) or move back. The receiver runs at the camera's frame rate
+(120 fps, one light's channels decoded concurrently); when the phone throttles
+("thermal serious/critical" in the remote stats) the frame rate and the yield
+drop by half.
+
 ## Remote session
 
 Settings › Debug › *Remote session* opens a TCP server on port 7777 that lets
