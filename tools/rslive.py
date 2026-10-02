@@ -122,7 +122,7 @@ def fmt_stats(s):
     tr = " ".join(f"#{t.get('group', t['id'])}{'·' + str(t['id']) if t.get('group', t['id']) != t['id'] else ''}{'[' + t['board'] + ']' if t.get('board') else ''}({int(t['x']*100)},{int(t['y']*100)} {t['mode']} {t['packets']}p)" for t in s.get("tracks", []))
     return (f"fps={s['fps']:.0f} pkt/s={s['pkt_per_s']:.1f} rpc={s['rows_per_chip']:.1f} mode={s['mode']} pilots={s['pilots']} "
             f"pkts={s['packets']} msgs={s['messages']} peak={s['peak']} sat={s['sat']:.3f} exp={s['exposure_us']:.0f}us iso={s['iso']:.0f} "
-            f"still={int(s['still'])} thermal={s.get('thermal', '?')}" + (f" exp_actual={s['exposure_actual_us']:.1f}us readout={s['readout_ms']:.2f}ms" if s.get('readout_ms') else "") + f" {tr}"
+            f"still={int(s['still'])} thermal={s.get('thermal', '?')}" + (f" stitched={s['stitched']}" if 'stitched' in s else "") + (f" exp_actual={s['exposure_actual_us']:.1f}us readout={s['readout_ms']:.2f}ms" if s.get('readout_ms') else "") + f" {tr}"
             + (f"  lab: period={s['lab']['period_rows']:.2f} rows strength={s['lab']['strength']:.2f} row={s['lab']['row_time_us']:.2f}us readout={s['lab']['readout_ms']:.2f}ms" if s.get('lab') else ""))
 
 
