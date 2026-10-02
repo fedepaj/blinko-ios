@@ -177,7 +177,7 @@ final class Pipeline {
             var id: Int32 = 0, mode: Int32 = 0, pilots: Int32 = 0; var cx: Float = 0, cy: Float = 0, rad: Float = 0
             var pk: UInt32 = 0, ms: UInt32 = 0
             if rs_multi_track_info(mp, Int32(i), &id, &cx, &cy, &rad, &mode, &pk, &ms, &pilots) != 0 {
-                tracks.append(TrackInfo(id: Int(id), x: cx / Float(w), y: cy / Float(h), radius: rad / Float(w), rgb: mode != 0, direct: mode == 2,
+                tracks.append(TrackInfo(id: Int(id), x: cx / Float(w / 4), y: cy / Float(h), radius: rad / Float(w / 4), rgb: mode != 0, direct: mode == 2,   // the tracker sees every 4th column: cx and radius are in those units
                                         group: Int(rs_multi_track_group(mp, Int32(i))), packets: Int(pk), messages: Int(ms), pilots: Int(pilots)))
             }
         }
