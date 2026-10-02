@@ -26,40 +26,49 @@ tools/pull_recordings.sh     # copy the .rsrec recordings off the phone
 
 `make build` and `make install` are shortcuts. In the app: **Live** is the
 camera preview with a marker ring per tracked light, the profile chart and the
-stats bar; **Console** lists the decoded messages by source and slot; **Lab**
+stats bar (`fps`, `pkt/s`, `rows/chip`, `contrast`, `mode`, `peak`, `pilots`,
+`msgs`); **Console** lists the decoded messages by source and slot; **Lab**
 holds the strobe calibration and the replay list; **Settings** has the camera
 controls (fps, exposure, ISO, lens, zoom), the decoder options and a Debug
 section. Hold the phone 1–3 cm from the board. A light's three channels are
-decoded concurrently (GCD), which keeps the multi-source path near 100 fps.
+decoded concurrently (GCD).
 
 ## Throughput and limits
 
-What this phone gets, measured with a Nano R4 one or two centimetres from the
-camera (one packet carries one message byte; a 20-character message takes
-about 22 packets):
+Measured on an iPhone 14 at 120 fps (exposure 15 µs) with a Nano R4 a few
+centimetres from the camera, sending three streams with one copy of each
+packet. One packet carries one message byte, and rates are of distinct
+packets:
 
-| board setting | packets/s | 20-char message |
-|---|---|---|
-| T = 45–60 µs, rep 1 (default 60) | 90–110 | under 0.5 s |
-| T = 60 µs, rep 2 (blob cut by the frame edge, LED saturating) | 50–110 | 0.5–1 s |
-| T = 120 µs, rep 3 (the death loop's setting) | 25–35 | about 1 s |
+| board setting | distinct packets/s |
+|---|---|
+| T = 60 µs (the default) | about 470 |
+| T = 45 µs | about 240 |
 
 Limits: the LED blob must be taller than a packet in the frame (about 320 rows
-at T = 60 µs on this sensor), so a few centimetres with the main camera; the
-exposure is 15 µs at 120 fps, so any T works; a LED that saturates the sensor
-(`sat` above 0.3 in the stats bar) loses packets, lower its brightness on the
-board (`bright 40`) or move back. The receiver runs at the camera's frame rate
-(120 fps, one light's channels decoded concurrently); when the phone throttles
-("thermal serious/critical" in the remote stats) the frame rate and the yield
-drop by half.
+at T = 60 µs on this sensor, 5.1 µs per row), so a few centimetres with the
+main camera; the exposure is 15 µs at 120 fps, so any T the board offers
+works; a LED that saturates the sensor (`peak` at 255 in the stats bar; the
+remote stats also give `sat`, the fraction of rows that clip) loses packets,
+lower its brightness on the board (`bright 40`) or move back. The receiver
+runs at the camera's frame rate; when the phone throttles (`thermal` is
+`serious` or `critical` in the remote stats) the frame rate drops to 85–110
+fps and the yield with it.
+
+The row time the receiver uses is 5.1 µs until the Lab's strobe calibration
+measures this phone's; the measured value is kept across launches (see
+`docs/CALIBRATION.md` in the
+[umbrella repository](https://github.com/fedepaj/blinko)).
 
 ## Remote session
 
-Settings › Debug › *Remote session* opens a TCP server on port 7777 that lets
-a computer drive the app: read and change settings, sample stats and messages,
-grab a frame, record, and pull or replay recordings. Drive it with
-`tools/rslive.py`, over USB (recommended) or over the Wi-Fi address shown in
-Settings:
+The app runs a TCP server on port 7777 (Settings › Debug › *Remote session*,
+on by default) that lets a computer drive it: read and change settings, sample
+stats and messages, grab a frame, record, list, replay and delete recordings.
+The server has no authentication, so it only accepts connections from the
+phone itself, which is what a USB forward is; *Allow Wi-Fi (LAN) connections*
+(off by default) opens it to the network, at the address shown in Settings.
+Both switches are remembered. Drive it with `tools/rslive.py`:
 
 ```sh
 pymobiledevice3 usbmux forward 7777 7777 &
@@ -67,18 +76,30 @@ tools/rslive.py get                       # settings + camera
 tools/rslive.py watch                     # live stats and messages
 tools/rslive.py set fps 120               # or exposure 0 (0..1, 0 = shortest)
 tools/rslive.py frame out.png
-tools/rslive.py record --seconds 2 --note "R4 rgb" --out ../testdata
+tools/rslive.py record --seconds 2 --note "R4 rgb" --out ../testdata   # 0.1 to 10 s
 tools/rslive.py files | replay NAME | delete --all
 ```
 
-It is also usable as a library: `with RSLive() as s: s.record(2, "note", dir)`.
+`record` sends the recording to the computer and removes it from the phone
+unless `--keep` is given. The client's `pull NAME` command is for the Android
+app; a recording kept on the iPhone is fetched with `tools/pull_recordings.sh`.
+`rslive.py` is also usable as a library:
+`with RSLive() as s: s.record(2, "note", dir)`. Every command, field and reply:
+[`docs/REMOTE.md`](https://github.com/fedepaj/blinko/blob/main/docs/REMOTE.md)
+in the umbrella repository.
 
-## Replay
+## Recordings and replay
 
-Turn on Settings › Debug › *Recording mode* to get a Record button on the Live
-screen; recordings are written as `.rsrec` (BGRA frames plus motion data) into
-the app's Documents folder. Lab › *Replay a recording* runs one back through
-the multi-source receiver on the phone — the messages show up in the Console
-tagged `replay` — which is the quickest way to check a decoder change against
-a real capture. The same recordings replay on a computer with
-`core/tools/replay.py`, and `rslive.py replay NAME` starts a replay remotely.
+Settings › Debug › *Recording mode* puts a *Record 2 s* button on the Live
+screen. Recordings are `.rsrec` files in `Documents/recordings` of the app's
+container: a JSON header followed by the BGRA frames with every fourth column
+kept, each with its timestamp and the motion sensors' readings
+([`docs/RECORDINGS.md`](https://github.com/fedepaj/blinko/blob/main/docs/RECORDINGS.md)
+in the umbrella repository). A recording is about 250 MB per second at
+120 fps, and **the app does not decode while it records**.
+
+Lab › *Replay a recording* runs one back through the multi-source receiver on
+the phone: the messages show up in the Console tagged `replay`. Live decoding
+pauses while a replay runs, and a recording cannot be started meanwhile. The
+same recordings replay on a computer with `core/tools/replay.py`, and
+`rslive.py replay NAME` starts a replay remotely.

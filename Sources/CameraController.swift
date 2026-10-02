@@ -82,7 +82,10 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
         // closest mode whose max rate covers the requested fps, else the fastest
         let fitting = formats.filter { maxRate($0) >= fps }.sorted { maxRate($0) < maxRate($1) }
         let fmt = fitting.first ?? formats.max { maxRate($0) < maxRate($1) }!
-        let actualFps = min(fps, maxRate(fmt))
+        // Inside the format's range, and a value Int32(...) below can take: AVFoundation raises on a
+        // frame duration the format does not support, and the conversion traps on a huge or NaN rate.
+        let minRate = max(1, fmt.videoSupportedFrameRateRanges.map(\.minFrameRate).min() ?? 1)
+        let actualFps = max(minRate, min(fps.isFinite ? fps : 30, maxRate(fmt)))
 
         try dev.lockForConfiguration()
         dev.activeFormat = fmt
@@ -134,10 +137,16 @@ final class CameraController: NSObject, AVCaptureVideoDataOutputSampleBufferDele
             let maxE = min(f.maxExposureDuration.seconds, 1.0 / 250.0)
             let e = minE * pow(maxE / minE, max(0, min(1, fraction)))
             let iso = f.minISO + Float(max(0, min(1, isoFraction))) * (f.maxISO - f.minISO)
+            // Clamped as CMTime against the format's own limits: CMTime(seconds:) truncates to its
+            // timescale, so the shortest exposure could come out just under minExposureDuration, and
+            // setExposureModeCustom raises an exception (not a Swift error) for a duration outside the
+            // format's range: the likely cause of the crash on a switch to 60 fps.
+            let maxD = CMTimeMaximum(f.minExposureDuration, CMTimeMinimum(f.maxExposureDuration, CMTime(value: 1, timescale: 250)))
+            let d = CMTimeMaximum(f.minExposureDuration, CMTimeMinimum(maxD, CMTime(seconds: e, preferredTimescale: 1_000_000_000)))
             do {
                 try dev.lockForConfiguration()
                 if dev.isExposureModeSupported(.custom) {
-                    dev.setExposureModeCustom(duration: CMTime(seconds: e, preferredTimescale: 1_000_000), iso: iso, completionHandler: nil)
+                    dev.setExposureModeCustom(duration: d, iso: iso, completionHandler: nil)
                 }
                 dev.unlockForConfiguration()
             } catch {}

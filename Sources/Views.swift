@@ -43,7 +43,7 @@ struct LiveView: View {
                         Label(model.isRecording ? "REC" : "Record 2 s", systemImage: "record.circle")
                             .foregroundStyle(model.isRecording ? .white : .red)
                     }
-                    .buttonStyle(.bordered).disabled(model.isRecording)
+                    .buttonStyle(.bordered).disabled(model.isRecording || model.replayRunning)
                     TextField("note (board, motion…)", text: $model.recordingNote).textFieldStyle(.roundedBorder).font(.footnote)
                 }
             }
@@ -85,26 +85,6 @@ struct LiveView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 4)
-    }
-}
-
-struct SlotBar: View {
-    let progress: [Float]
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<8, id: \.self) { i in
-                VStack(spacing: 2) {
-                    GeometryReader { g in
-                        ZStack(alignment: .leading) {
-                            Rectangle().fill(.gray.opacity(0.3))
-                            Rectangle().fill(i == 7 ? .red : (i == 6 ? .cyan : .green))
-                                .frame(width: g.size.width * CGFloat(i < progress.count ? progress[i] : 0))
-                        }
-                    }.frame(height: 6)
-                    Text(i == 7 ? "F" : (i == 6 ? "S" : "\(i)")).font(.system(size: 9, design: .monospaced)).foregroundStyle(.secondary)
-                }
-            }
-        }
     }
 }
 
@@ -267,12 +247,12 @@ struct LabView: View {
                         HStack {
                             Text(u.lastPathComponent).font(.system(.footnote, design: .monospaced))
                             Spacer()
-                            Button(model.replayRunning ? "…" : "Run") { model.replay(u) }.disabled(model.replayRunning)
+                            Button(model.replayRunning ? "…" : "Run") { model.replay(u) }.disabled(model.replayRunning || model.isRecording)
                         }
                     }
                     if !model.replayProgress.isEmpty { Text(model.replayProgress).font(.footnote).foregroundStyle(.secondary) }
                     if model.replayRunning { Button("Cancel") { model.replayEngine.cancel() } }
-                    Text("Runs the recording through the multi-source receiver; messages appear in the console tagged 'replay'.").font(.footnote).foregroundStyle(.secondary)
+                    Text("Runs the recording through the multi-source receiver; messages appear in the console tagged 'replay'. Live decoding pauses while it runs.").font(.footnote).foregroundStyle(.secondary)
                 }
                 Section("Live profile") {
                     ProfileChart(profile: model.profile, marks: []).frame(height: 90)
@@ -284,8 +264,10 @@ struct LabView: View {
                         row("Row time", r.rowTimeUs > 0 ? String(format: "%.2f µs", r.rowTimeUs) : "-")
                         row("Frame readout", r.readoutMs > 0 ? String(format: "%.2f ms", r.readoutMs) : "-")
                         if r.rowTimeUs > 0 {
-                            row("Min chip (4 rows)", String(format: "%.0f µs", 4 * r.rowTimeUs))
-                            row("Packet height @30µs", String(format: "%.0f rows", 67 * 30 / r.rowTimeUs))   /* RS_PKT_CHIPS, a computed macro Swift cannot import */
+                            // In the board's unit T (chip_us, default 60 µs); a chip is T / RS_CELLS_PER_T. These rows
+                            // showed a 4-row chip and a 67-chip packet of 30 µs chips, the previous protocol's figures.
+                            row("Min T (1.5 rows/chip)", String(format: "%.0f µs", 1.5 * Double(RS_CELLS_PER_T) * r.rowTimeUs))
+                            row("Packet height @T=60 µs", String(format: "%.0f rows", 82 * 60 / Double(RS_CELLS_PER_T) / r.rowTimeUs))   /* 82 = RS_PKT_CHIPS, a computed macro Swift cannot import */
                         }
                         if r.otherStrength > r.strength * 1.5 && r.otherStrength > 0.2 {
                             Button("Bands are on the other axis → switch") {
@@ -353,7 +335,9 @@ struct SettingsView: View {
                 Section("Debug") {
                     Toggle("Remote session (TCP port \(RemoteServer.port))", isOn: $model.settings.remoteEnabled)
                     if model.settings.remoteEnabled {
-                        Text("Wi-Fi: \(model.remoteAddress)  ·  USB: pymobiledevice3 usbmux forward 7777 7777  ·  clients: \(model.remoteClients)")
+                        Toggle("Allow Wi-Fi (LAN) connections", isOn: $model.settings.remoteLAN)
+                        Text((model.settings.remoteLAN ? "Wi-Fi: \(model.remoteAddress) (no password: anyone on the network can drive the app)  ·  " : "")
+                             + "USB: pymobiledevice3 usbmux forward 7777 7777  ·  clients: \(model.remoteClients)")
                             .font(.footnote).foregroundStyle(.secondary)
                     }
                     Toggle("Recording mode (Record button, .rsrec to Documents)", isOn: $model.settings.recordingEnabled)

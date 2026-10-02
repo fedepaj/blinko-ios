@@ -3,7 +3,7 @@
 
 Connect over USB (recommended, no Wi-Fi needed):
     pymobiledevice3 usbmux forward 7777 7777 &     # then host = 127.0.0.1
-or over Wi-Fi with the address shown in the app's Settings.
+or over Wi-Fi with the address shown in the app's Settings, once "Allow Wi-Fi (LAN) connections" is on there.
 
   rslive.py [--host H] [--port P] get                      current settings + camera
   rslive.py stats                                          one stats sample
@@ -51,6 +51,13 @@ class RSLive:
         payload = self._read(length)
         return kind, (json.loads(payload) if kind == 0 else payload)
 
+    def _binary(self, size, what):
+        """The binary frame that follows the JSON message announcing it, checked against the announced size."""
+        kind, data = self.recv()
+        if kind != 1: raise RuntimeError(f"{what}: expected the binary payload, got {data!r}")
+        if len(data) != size: raise RuntimeError(f"{what}: {len(data)} bytes received, {size} announced")
+        return data
+
     def wait(self, types, timeout=30.0, on_other=None):
         """Next JSON message whose type is in `types` (stats broadcasts are skipped unless asked for)."""
         end = time.time() + timeout
@@ -64,22 +71,30 @@ class RSLive:
     # ---- commands
     def get(self): self.send({"cmd": "get"}); return self.wait({"settings"})["settings"]
     def set(self, key, value): self.send({"cmd": "set", "key": key, "value": value}); return self.wait({"settings"})["settings"]
-    def stats(self): self.send({"cmd": "stats"}); return self.wait({"stats"})
+    def _drain(self):
+        """Discard what the app has sent since the last read. It broadcasts a stats message five
+        times a second (and every decoded message) to each client, so on a connection left idle
+        the next message of type "stats" in the socket is seconds old, not the reply to a command
+        sent now."""
+        import select
+        while select.select([self.sock], [], [], 0)[0]:
+            self.recv()
+
+    def stats(self): self._drain(); self.send({"cmd": "stats"}); return self.wait({"stats"})
     def reset(self): self.send({"cmd": "reset"}); return self.wait({"ok"})
     def messages(self): self.send({"cmd": "messages"}); return self.wait({"messages"})["messages"]
 
     def frame(self, step=2):
         """(header dict, bytes) — BGRA rows, header w/h already subsampled."""
         self.send({"cmd": "frame", "step": step})
-        hdr = self.wait({"frame"}); kind, data = self.recv()
-        assert kind == 1 and len(data) == hdr["w"] * hdr["h"] * (4 if hdr.get("format") != "PROFILES" else 4)
-        return hdr, data
+        hdr = self.wait({"frame"})
+        # 4 bytes per sample in both formats: BGRA pixels, or (PROFILES, w = 3) float32 profile values
+        return hdr, self._binary(hdr["w"] * hdr["h"] * 4, "frame")
 
     def files(self): self.send({"cmd": "files"}); return self.wait({"files"})["files"]
     def pull(self, name, out_dir="."):
         self.send({"cmd": "pull", "name": name})
-        hdr = self.wait({"file"}, timeout=300); kind, data = self.recv()
-        assert kind == 1 and len(data) == hdr["size"]
+        hdr = self.wait({"file"}, timeout=300); data = self._binary(hdr["size"], "pull")
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, hdr["name"])
         with open(path, "wb") as f: f.write(data)
@@ -93,13 +108,12 @@ class RSLive:
     def delete(self, names): self.send({"cmd": "delete", "names": list(names)}); return self.wait({"ok"})["removed"]
 
     def record(self, seconds=2.0, note="", out_dir=".", keep=False, progress=None):
-        """Record on the phone, pull the .rsrec into out_dir, return its path."""
+        """Record on the phone, pull the .rsrec into out_dir; returns (path, summary line of the recording)."""
         self.send({"cmd": "record", "seconds": seconds, "note": note, "send": True, "keep": keep})
         self.wait({"recording"})                                  # started
         done = self.wait({"recording"}, timeout=seconds + 30, on_other=progress)
         hdr = self.wait({"file"}, timeout=120, on_other=progress)
-        kind, data = self.recv()
-        assert kind == 1 and len(data) == hdr["size"]
+        data = self._binary(hdr["size"], "record")
         os.makedirs(out_dir, exist_ok=True)
         path = os.path.join(out_dir, hdr["name"])
         with open(path, "wb") as f: f.write(data)

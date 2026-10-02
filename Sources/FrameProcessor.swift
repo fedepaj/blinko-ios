@@ -25,7 +25,7 @@ final class FrameProcessor {
         } } }
         var res = Result(); res.width = w; res.height = h
         res.count = Int(info.count); res.roi = (Int(info.roi_start), Int(info.roi_end)); res.peak = Int(info.peak); res.satFrac = info.sat_frac
-        res.crossLength = axis == .rows ? w : h
+        res.crossLength = axis == .rows ? w / 4 : h   // the units of `roi`: the row axis is scanned every 4th column
         return res
     }
 }

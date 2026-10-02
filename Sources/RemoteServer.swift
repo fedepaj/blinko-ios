@@ -6,10 +6,12 @@ import Network
 ///
 /// Framing, both directions: u32 big-endian length | u8 kind (0 = JSON, 1 = binary) | payload.
 /// Binary payloads are always announced by the JSON message that precedes them.
-/// Reach it over Wi-Fi (address shown in Settings) or over USB with
-/// `pymobiledevice3 usbmux forward 7777 7777` and then localhost:7777.
+/// Reach it over USB with `pymobiledevice3 usbmux forward 7777 7777` and then localhost:7777,
+/// or, when started with `lan`, over Wi-Fi (address shown in Settings).
 final class RemoteServer {
     static let port: UInt16 = 7777
+    /// Largest frame a client may send. Clients only send commands, a few hundred bytes of JSON.
+    private static let maxFrame = 1 << 20
 
     /// A command from a client; `reply` sends JSON (+ optional binary) back to that client only.
     var onCommand: ((_ cmd: [String: Any], _ reply: @escaping ([String: Any], Data?) -> Void) -> Void)?
@@ -19,25 +21,40 @@ final class RemoteServer {
     private var listener: NWListener?
     private var conns: [ObjectIdentifier: NWConnection] = [:]
     private(set) var isRunning = false
+    private var wanted = false, lan = false
 
-    func start() {
-        queue.async {
-            guard self.listener == nil else { return }
-            let params = NWParameters.tcp
-            params.allowLocalEndpointReuse = true
-            guard let l = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.port)!) else {
-                Diag.log("[remote] listener failed"); return
-            }
-            l.newConnectionHandler = { [weak self] c in self?.accept(c) }
-            l.stateUpdateHandler = { state in Diag.log("[remote] listener \(state)") }
-            l.start(queue: self.queue)
-            self.listener = l
-            self.isRunning = true
+    /// `lan` false: clients on this device only, which is what a usbmux forward is; true: every interface.
+    func start(lan: Bool) {
+        queue.async { self.wanted = true; self.lan = lan; self.listen() }
+    }
+
+    private func listen() {
+        guard wanted, listener == nil else { return }
+        let params = NWParameters.tcp
+        params.allowLocalEndpointReuse = true
+        // The server has no authentication and its commands delete files and drive the camera, so it
+        // is not put on the network unless asked: the loopback interface is all the USB workflow
+        // needs (usbmux connects to the device's localhost). It used to listen on every interface.
+        if !lan { params.requiredInterfaceType = .loopback }
+        guard let l = try? NWListener(using: params, on: NWEndpoint.Port(rawValue: Self.port)!) else {
+            Diag.log("[remote] listener failed"); return
         }
+        l.newConnectionHandler = { [weak self] c in self?.accept(c) }
+        l.stateUpdateHandler = { [weak self, weak l] state in
+            Diag.log("[remote] listener \(state)")
+            // a failed listener (port still taken, network change) stays dead: replace it after a pause
+            guard case .failed = state, let self = self, let l = l, self.listener === l else { return }
+            l.cancel(); self.listener = nil; self.isRunning = false
+            self.queue.asyncAfter(deadline: .now() + 2) { self.listen() }
+        }
+        l.start(queue: queue)
+        listener = l
+        isRunning = true
     }
 
     func stop() {
         queue.async {
+            self.wanted = false
             self.listener?.cancel(); self.listener = nil; self.isRunning = false
             for c in self.conns.values { c.cancel() }
             self.conns.removeAll()
@@ -50,9 +67,18 @@ final class RemoteServer {
     /// Send to every connected client.
     func broadcast(_ json: [String: Any], binary: Data? = nil) {
         queue.async {
-            guard !self.conns.isEmpty, let framed = Self.frame(json, binary) else { return }
-            for c in self.conns.values { c.send(content: framed, completion: .contentProcessed { _ in }) }
+            guard !self.conns.isEmpty, let head = Self.frame(json, binary) else { return }
+            for c in self.conns.values { self.send(c, head, binary) }
         }
+    }
+
+    /// One message to one client; call on `queue`. `head` is what `frame` returns; the binary
+    /// payload goes out as a send of its own, as it is: a recording is hundreds of MB and used to
+    /// be copied into one framed buffer. Every send is made on `queue`, so nothing can come
+    /// between the two.
+    private func send(_ c: NWConnection, _ head: Data, _ binary: Data?) {
+        c.send(content: head, completion: .contentProcessed { _ in })
+        if let b = binary, !b.isEmpty { c.send(content: b, completion: .contentProcessed { _ in }) }
     }
 
     // MARK: - connections
@@ -83,26 +109,35 @@ final class RemoteServer {
             let b = [UInt8](d)
             let len = Int(b[0]) << 24 | Int(b[1]) << 16 | Int(b[2]) << 8 | Int(b[3])
             let kind = b[4]
-            guard len > 0, len < 64 * 1024 * 1024 else { self.readMessage(c); return }
+            let reply: ([String: Any], Data?) -> Void = { [weak self, weak c] json, bin in
+                self?.queue.async { if let c = c, let head = Self.frame(json, bin) { self?.send(c, head, bin) } }
+            }
+            let notCommand: [String: Any] = ["type": "error", "msg": "not a command (a JSON object is expected)"]
+            guard len > 0 else { reply(notCommand, nil); self.readMessage(c); return }
+            // A frame over the limit cannot be skipped without reading it all, and reading on from
+            // here (as this did) takes its payload for the next headers: the connection is closed.
+            guard len <= Self.maxFrame else {
+                Diag.log("[remote] client announced a \(len)-byte frame, closed"); self.remove(ObjectIdentifier(c)); return
+            }
             c.receive(minimumIncompleteLength: len, maximumLength: len) { [weak self] data, _, _, error in
                 guard let self = self, let p = data, p.count == len, error == nil else { self?.remove(ObjectIdentifier(c)); return }
                 if kind == 0, let obj = try? JSONSerialization.jsonObject(with: p) as? [String: Any] {
-                    let reply: ([String: Any], Data?) -> Void = { [weak c] json, bin in
-                        guard let c = c, let framed = Self.frame(json, bin) else { return }
-                        c.send(content: framed, completion: .contentProcessed { _ in })
-                    }
                     if let h = self.onCommand { h(obj, reply) } else { reply(["type": "error", "msg": "no handler"], nil) }
-                }
+                } else { reply(notCommand, nil) }
                 self.readMessage(c)
             }
         }
     }
 
+    /// The JSON frame, followed by the header of the binary frame when there is one (its payload is sent apart).
     private static func frame(_ json: [String: Any], _ binary: Data?) -> Data? {
         guard let j = try? JSONSerialization.data(withJSONObject: json) else { return nil }
         var out = Data()
         out.append(header(j.count, kind: 0)); out.append(j)
-        if let b = binary { out.append(header(b.count, kind: 1)); out.append(b) }
+        if let b = binary {
+            guard b.count <= Int(UInt32.max) else { return nil }   // the length field is 32 bits
+            out.append(header(b.count, kind: 1))
+        }
         return out
     }
 

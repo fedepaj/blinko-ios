@@ -41,9 +41,7 @@ struct Snapshot {
     var profile: [Float]
     var marks: [PacketMark]
     var stats: DecodeStats
-    var slotProgress: [Float]
     var tracks: [TrackInfo] = []
-    var progressLabel = ""      // source the slot bars refer to
 }
 
 struct LabResult {
@@ -56,23 +54,28 @@ struct LabResult {
     var count: Int
 }
 
-/// Frame -> profile -> packets -> messages. Runs on the camera queue.
-final class Pipeline {
+/// Frame -> profile -> packets -> messages. Runs on the camera queue, and belongs to it: the
+/// receivers are plain C state without locks, so the settings below, `frameRequest` and `reset()`
+/// are only touched there too (SessionModel hops with `onCamera`). Set from the main actor, a
+/// reset used to re-initialise the receivers while rs_multi_process was running on them.
+/// `@unchecked Sendable` states that confinement: the object is handed to the camera queue's closures.
+final class Pipeline: @unchecked Sendable {
     var axis: ScanAxis = .rows
     var labMode = false
     var strobeHz: Double = 2000
     var minContrast: Float = 6
     /// Camera exposure (µs) and sensor row time (µs) for the exposure-aware detector; 0 = unknown.
-    var exposureUs: Double = 0
-    var rowUs: Double = 5.4
+    /// The row time is the iPhone 14's at 1080p (docs/CALIBRATION.md) until the Lab measures this
+    /// phone's; SessionModel keeps the measured value across launches.
+    static let defaultRowUs = 5.1
+    var exposureUs: Double = 0 { didSet { if exposureUs != oldValue { cameraDirty = true } } }
+    var rowUs: Double = Pipeline.defaultRowUs { didSet { if rowUs != oldValue { cameraDirty = true } } }
 
     let recorder = Recorder()
-    var onRecordingFinished: ((String) -> Void)?
+    var onRecordingFinished: ((_ summary: String, _ failure: String?) -> Void)?
     var onSnapshot: ((Snapshot) -> Void)?
     var onMessage: ((Int, Int, String, Int) -> Void)?   // slot, level, text, source track (0 = single)
     var multiSource = true
-    /// Which logical source the slot bars follow in multi-source mode (0 = the busiest light).
-    var progressSource = 0
     var onLab: ((LabResult) -> Void)?
 
     private let processor = FrameProcessor()
@@ -89,8 +92,6 @@ final class Pipeline {
     }()
     private var mp: UnsafeMutablePointer<rs_multi_t> { multi.assumingMemoryBound(to: rs_multi_t.self) }
     private var lastTracks: [TrackInfo] = []
-    private var progressLabel = ""
-    private var lastProgress = [Float](repeating: 0, count: 8)
     private var profile = [Float](repeating: 0, count: 4096)   /* luma, for display and lab */
     private var profileB = [Float](repeating: 0, count: 4096)
     private var frameTimes: [Double] = []
@@ -103,6 +104,17 @@ final class Pipeline {
     private var rpcEMA: Float = 0
     private var markSeq = 0
     private var lastDump: Double = 0
+    /// The receivers have to be given the camera description again: it changed, or they were
+    /// re-initialised. It is pushed before the next frame is decoded, whichever path decodes it:
+    /// it used to be set only on the single-receiver path, which the multi-source path returns
+    /// ahead of, so the tracks never got the exposure or the row time.
+    private var cameraDirty = true
+    /// Presentation time of the first frame since the receivers were initialised. The camera stamps
+    /// frames in seconds since boot and the C receiver takes the time as a Float: after hours of
+    /// uptime a Float resolves 8-30 ms, coarser than a frame, and the receiver's inter-frame timing
+    /// (stitching, same-board test) is lost. Relative to this the step is a few µs in the first
+    /// minute and grows with the time since the last reset (0.1 ms after 17 min, 0.5 ms after 2 h).
+    private var timeBase: Double?
     var dumpFrames = false
     /// One-shot: the next frame is handed to this closure (remote "frame" command), then cleared.
     var frameRequest: ((CVPixelBuffer, Double) -> Void)?
@@ -127,7 +139,7 @@ final class Pipeline {
         return (out, ow, h)
     }
 
-    /// Save the full luma plane as PGM (Documents/frame.pgm) for offline analysis.
+    /// Save the full frame as a binary RGB PPM (Documents/frame.ppm) for offline analysis.
     private func dumpFrame(_ pb: CVPixelBuffer) {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
@@ -148,28 +160,39 @@ final class Pipeline {
     init() { setHooks() }
 
     /// The receiver's parallel hook: a light's three channels decode concurrently (GCD); the
-    /// decoder's scratch is thread-local (RS_DEC_THREADS in project.yml).
-    private func setHooks() {
-        let par: rs_parallel_fn = { _, count, job, ctx in
-            guard let job = job else { return }
-            DispatchQueue.concurrentPerform(iterations: Int(count)) { job(ctx, Int32($0)) }
-        }
-        rs_rx_set_parallel(rxp, par, nil)
-        rs_multi_set_parallel(mp, par, nil)
+    /// decoder's scratch is thread-local (RS_DEC_THREADS in project.yml). Shared with ReplayEngine.
+    static let parallelHook: rs_parallel_fn = { _, count, job, ctx in
+        guard let job = job else { return }
+        DispatchQueue.concurrentPerform(iterations: Int(count)) { job(ctx, Int32($0)) }
     }
 
-    func reset() { rs_rx_init(rxp); rs_multi_init(mp); setHooks(); totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0 }
+    private func setHooks() {
+        rs_rx_set_parallel(rxp, Self.parallelHook, nil)
+        rs_multi_set_parallel(mp, Self.parallelHook, nil)
+    }
+
+    /// What the receivers are told about the camera: the exposure in rows and the row time.
+    static func cameraDescription(exposureUs: Double, rowUs: Double) -> rs_camera_t {
+        rs_camera_t(exposure_rows: Float(exposureUs > 0 && rowUs > 0 ? exposureUs / rowUs : 0), row_seconds: Float(rowUs * 1e-6))
+    }
+
+    /// Re-initialised receivers have lost their hooks and their camera description, and carry no
+    /// timing state: the hooks go back at once, the camera with the next frame, and the time base restarts.
+    func reset() {
+        rs_rx_init(rxp); rs_multi_init(mp); setHooks(); cameraDirty = true; timeBase = nil
+        totalPackets = 0; totalMessages = 0; packetTimes.removeAll(); rpcEMA = 0
+    }
 
     /// Multi-source path: segmentation + one receiver per light, straight on the BGRA buffer.
     /// Returns nil when no light is found (the caller falls back to the single-ROI path).
-    private func processMulti(_ pb: CVPixelBuffer, t: Double, now: Double) -> Int32? {
+    private func processMulti(_ pb: CVPixelBuffer, t: Float, now: Double) -> Int32? {
         CVPixelBufferLockBaseAddress(pb, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(pb, .readOnly) }
         guard let base = CVPixelBufferGetBaseAddress(pb) else { return nil }
         let w = CVPixelBufferGetWidth(pb), h = CVPixelBufferGetHeight(pb), bpr = CVPixelBufferGetBytesPerRow(pb)
         // every 4th column (pixel stride 16 bytes): profiles are column averages, and 480 columns are what the
         // recordings and the Android app use; 4x less pixel work per frame
-        let n = rs_multi_process(mp, base.assumingMemoryBound(to: UInt8.self), Int32(w / 4), Int32(h), Int32(bpr), 16, 2, 1, 0, Float(t))
+        let n = rs_multi_process(mp, base.assumingMemoryBound(to: UInt8.self), Int32(w / 4), Int32(h), Int32(bpr), 16, 2, 1, 0, t)
         let count = Int(rs_multi_track_count(mp))
         if count == 0 { lastTracks = []; return nil }
         var tracks: [TrackInfo] = []
@@ -182,18 +205,6 @@ final class Pipeline {
             }
         }
         lastTracks = tracks
-        // slot bars: assembler fill of the followed source (its leader track), else the busiest track
-        var best = -1
-        for i in 0..<count {
-            let t = tracks[i]
-            if progressSource > 0 { if t.group == progressSource && (best < 0 || t.id == t.group) { best = i } }
-            else if best < 0 || t.packets > tracks[best].packets { best = i }
-        }
-        if best >= 0, let rx = rs_multi_track_rx(mp, Int32(best)) {
-            let asmPtr = (UnsafeRawPointer(rx) + MemoryLayout<rs_rx_t>.offset(of: \rs_rx_t.assembler)!).assumingMemoryBound(to: rs_asm_t.self)
-            for s in 0..<8 { lastProgress[s] = rs_asm_progress(asmPtr, UInt8(s)) }
-            progressLabel = "#\(tracks[best].group)"
-        } else { for s in 0..<8 { lastProgress[s] = 0 }; progressLabel = "" }
         var msg = rs_message_t(); var tid: Int32 = 0
         while rs_multi_pop_message(mp, &msg, &tid) != 0 {
             totalMessages += 1
@@ -217,7 +228,7 @@ final class Pipeline {
 
         if recorder.isRecording {
             if !recorder.append(pb, timestamp: t) {
-                recorder.whenDrained { [weak self] in guard let self = self else { return }; self.onRecordingFinished?(self.recorder.summary) }
+                recorder.whenDrained { [weak self] in guard let self = self else { return }; self.onRecordingFinished?(self.recorder.summary, self.recorder.error) }
             }
             return
         }
@@ -233,7 +244,17 @@ final class Pipeline {
         }
         if labMode, let res = resOpt { analyzeLab(pb, res); return }
 
-        if multiSource, let n = processMulti(pb, t: t, now: now) {
+        if cameraDirty {
+            cameraDirty = false
+            let cam = Self.cameraDescription(exposureUs: exposureUs, rowUs: rowUs)
+            rs_rx_set_camera(rxp, cam); rs_multi_set_camera(mp, cam)
+        }
+        rxp.pointee.cfg.min_contrast = minContrast          // both receivers: the single one and every track
+        rs_multi_set_min_contrast(mp, minContrast)
+        if timeBase == nil { timeBase = t }
+        let rt = Float(t - (timeBase ?? t))   // time for the receivers, see timeBase; `t` stays absolute for the recorder and the frame request
+
+        if multiSource, let n = processMulti(pb, t: rt, now: now) {
             let res = lastRes
             packetTimes.removeAll { now - $0 > 2 }
             if now - lastUI > 0.08 || n > 0 {
@@ -247,8 +268,7 @@ final class Pipeline {
                 stats.rgbMode = lastTracks.contains { $0.rgb }; stats.pilots = lastTracks.map(\.pilots).reduce(0, +)
                 stats.modeName = lastTracks.map(\.modeName).joined(separator: "/")
                 stats.rowsPerChip = rpcEMA
-                onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats,
-                                     slotProgress: lastProgress, tracks: lastTracks, progressLabel: progressLabel))
+                onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats, tracks: lastTracks))
             }
             return
         }
@@ -259,14 +279,10 @@ final class Pipeline {
             lumaProfile(r0); res = r0; lastRes = r0
         }
 
-        rxp.pointee.cfg.min_contrast = minContrast
-        let cam = rs_camera_t(exposure_rows: Float(exposureUs > 0 && rowUs > 0 ? exposureUs / rowUs : 0), row_seconds: Float(rowUs * 1e-6))
-        rs_rx_set_camera(rxp, cam); rs_multi_set_camera(mp, cam)
         let n = processor.r.withUnsafeBufferPointer { rp in processor.g.withUnsafeBufferPointer { gp in processor.b.withUnsafeBufferPointer { bp in
-            rs_rx_process(rxp, rp.baseAddress, gp.baseAddress, bp.baseAddress, Int32(res.count), Float(t))
+            rs_rx_process(rxp, rp.baseAddress, gp.baseAddress, bp.baseAddress, Int32(res.count), rt)
         } } }
         var marks: [PacketMark] = []
-        var progress = [Float](repeating: 0, count: 8)
         for i in 0..<Int(n) {
             var pkt = rs_packet_t(); var ch: UInt8 = 0
             guard rs_rx_packet_at(rxp, Int32(i), &pkt, &ch) != 0 else { continue }
@@ -285,7 +301,6 @@ final class Pipeline {
             onMessage?(Int(msg.id), Int(msg.level), text, 0)
         }
         packetTimes.removeAll { now - $0 > 2 }
-        for s in 0..<8 { progress[s] = rs_asm_progress(&rxp.pointee.assembler, UInt8(s)) }
         let st = rs_rx_stats(rxp).pointee
 
         if now - lastUI > 0.08 || n > 0 {
@@ -304,7 +319,7 @@ final class Pipeline {
             stats.roi = res.roi; stats.crossLength = res.crossLength
             stats.profileLength = res.count
             stats.lastPacketAge = now - lastPacket
-            onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: marks, stats: stats, slotProgress: progress))
+            onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: marks, stats: stats))
         }
     }
 
@@ -321,7 +336,7 @@ final class Pipeline {
             lastUI = now
             var stats = DecodeStats()
             stats.fps = Double(frameTimes.count); stats.profileLength = res.count; stats.roi = res.roi; stats.crossLength = res.crossLength
-            onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats, slotProgress: []))
+            onSnapshot?(Snapshot(profile: Self.downsample(profile, res.count, to: 320), marks: [], stats: stats))
             let rowTime = pA > 0 ? 1.0 / (strobeHz * Double(pA)) : 0
             onLab?(LabResult(axis: axis, periodRows: pA, strength: sA, otherStrength: sB,
                              rowTimeUs: rowTime * 1e6, readoutMs: rowTime * Double(res.count) * 1e3, count: res.count))

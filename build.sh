@@ -13,13 +13,20 @@ export BLINKO_TEAM_ID BLINKO_BUNDLE_ID
 DEVICE=${DEVICE:-$(xcrun devicectl list devices 2>/dev/null | awk '/available \(paired\)/ && /iPhone/ {for(i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-/) print $i; exit}')}
 cd "$HERE" && xcodegen generate --quiet
 DERIVED="$HERE/build"
+mkdir -p "$DERIVED"
+# xcodebuild's own exit status goes through a file: the pipeline's status is grep's, and the
+# ${pipestatus[1]:-${PIPESTATUS[1]}} this used is xcodebuild's only under zsh; under sh it is
+# grep's too, so a failed build went on to install the app left by the previous one.
+STATUS="$DERIVED/.xcodebuild-status"
+rm -f "$STATUS"
 set +e
-xcodebuild -project "$HERE/Blinko.xcodeproj" -scheme Blinko -configuration Debug \
-    -destination "generic/platform=iOS" -derivedDataPath "$DERIVED" -allowProvisioningUpdates build 2>&1 \
+{ xcodebuild -project "$HERE/Blinko.xcodeproj" -scheme Blinko -configuration Debug \
+    -destination "generic/platform=iOS" -derivedDataPath "$DERIVED" -allowProvisioningUpdates build 2>&1
+  echo $? > "$STATUS"; } \
     | grep -E "error:|warning: .*Sources|BUILD|Signing"
-status=${pipestatus[1]:-${PIPESTATUS[1]}}
 set -e
-[ "$status" = 0 ] || { echo "xcodebuild failed" >&2; exit 1; }
+status=$(cat "$STATUS" 2>/dev/null || echo 1)
+[ "$status" = 0 ] || { echo "xcodebuild failed (exit $status)" >&2; exit 1; }
 APP=$(find "$DERIVED/Build/Products/Debug-iphoneos" -maxdepth 1 -name "*.app" | head -1)
 [ -n "$APP" ] || { echo "build failed" >&2; exit 1; }
 echo "built: $APP"
