@@ -262,6 +262,7 @@ final class Pipeline {
         rxp.pointee.cfg.min_contrast = minContrast
         rxp.pointee.cfg.exposure_rows = Float(exposureUs > 0 && rowUs > 0 ? exposureUs / rowUs : 0)
         rs_multi_set_exposure_rows(mp, Float(exposureUs > 0 && rowUs > 0 ? exposureUs / rowUs : 0))
+        rs_rx_set_row_time(rxp, Float(rowUs * 1e-6)); rs_multi_set_row_time(mp, Float(rowUs * 1e-6))   // the stitcher predicts phases across frames from the row time
         let n = processor.r.withUnsafeBufferPointer { rp in processor.g.withUnsafeBufferPointer { gp in processor.b.withUnsafeBufferPointer { bp in
             rs_rx_process(rxp, rp.baseAddress, gp.baseAddress, bp.baseAddress, Int32(res.count), Float(t))
         } } }
